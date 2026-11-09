@@ -10,6 +10,8 @@ import {
 } from "react";
 import {
   ArrowBendDownRightIcon,
+  QuestionIcon,
+  LockSimpleIcon,
   ArrowRightIcon,
   ArrowUpRightIcon,
   BookmarkSimpleIcon,
@@ -42,6 +44,9 @@ import {
 import { findDetours, helpTopics } from "@/lib/matching";
 import { parseBrowserState, serializeBrowserState } from "@/lib/browser-state";
 import type { Invitation } from "@/lib/server/network";
+import { events, DEFAULT_EVENT_ID, type EventId } from "@/lib/events";
+import EventAccessForm from "@/components/event-access-form";
+import EventRequestForm from "@/components/event-request-form";
 
 type View = "discover" | "detours" | "card";
 type Overlay =
@@ -50,6 +55,8 @@ type Overlay =
   | { type: "invitation"; id: string }
   | { type: "person"; person: Person & { mode?: Profile["mode"] } }
   | { type: "about" }
+  | { type: "event-access" }
+  | { type: "event-request" }
   | null;
 const topics: Topic[] = [
   "All people",
@@ -64,7 +71,6 @@ const colors = {
   sage: "bg-success-subtle",
   blue: "bg-info-subtle",
 };
-const storageKey = "detour-preview-v1";
 type Network = {
   mode: "preview" | "connected";
   people: (Person & { mode?: Profile["mode"] })[];
@@ -257,6 +263,174 @@ function Modal({
   );
 }
 
+function PublishPrompt({ onGetStarted }: { onGetStarted: () => void }) {
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-subtle p-3 text-sm">
+      <p role="status">Publish your introduction first.</p>
+      <button type="button" className="text-link mt-1" onClick={onGetStarted}>
+        Get started
+        <ArrowRightIcon size={16} />
+      </button>
+    </div>
+  );
+}
+
+function PublishAction({
+  published,
+  onGetStarted,
+  onAction,
+  children,
+  className,
+  disabled = false,
+}: {
+  published: boolean;
+  onGetStarted: () => void;
+  onAction: () => void;
+  children: ReactNode;
+  className: string;
+  disabled?: boolean;
+}) {
+  const [showPrompt, setShowPrompt] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        className={className}
+        disabled={published && disabled}
+        onClick={() => {
+          if (!published) setShowPrompt(true);
+          else onAction();
+        }}
+      >
+        {children}
+      </button>
+      {showPrompt && !published && <PublishPrompt onGetStarted={onGetStarted} />}
+    </div>
+  );
+}
+
+function InvitationPlanForm({
+  mode,
+  locations,
+  published,
+  busy,
+  label,
+  primary = false,
+  unavailableReason,
+  onGetStarted,
+  onCreate,
+}: {
+  mode: Profile["mode"];
+  locations: readonly string[];
+  published: boolean;
+  busy: boolean;
+  label: string;
+  primary?: boolean;
+  unavailableReason?: string;
+  onGetStarted: () => void;
+  onCreate: (meetingSpot: string) => void;
+}) {
+  const [meetingSpot, setMeetingSpot] = useState("");
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [error, setError] = useState("");
+  const planRef = useRef<HTMLInputElement>(null);
+  const id = useId();
+  const textFirst = mode === "Text first";
+  const availableLocations = locations.length ? locations : ["Coffee bar"];
+  const defaultLocation = availableLocations[0];
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!published) {
+      setShowPrompt(true);
+      return;
+    }
+    if (busy || unavailableReason) return;
+    const plan = meetingSpot.trim();
+    if (textFirst && !plan) {
+      setError("Add a shared text channel or a plan for exchanging messages.");
+      planRef.current?.focus();
+      return;
+    }
+    setError("");
+    onCreate(plan || defaultLocation);
+  }
+  return (
+    <form onSubmit={submit} className="mt-6 space-y-3">
+      {published && (
+        <>
+          {textFirst ? (
+            <label className="block text-sm font-medium">
+              Where will you exchange messages?
+              <input
+                ref={planRef}
+                className="field mt-2"
+                value={meetingSpot}
+                onChange={(event) => {
+                  setMeetingSpot(event.target.value);
+                  setError("");
+                }}
+                maxLength={120}
+                required
+                aria-describedby={`${id}-note${error ? ` ${id}-error` : ""}`}
+                aria-invalid={Boolean(error)}
+                placeholder="Event Discord, #introductions channel"
+              />
+            </label>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium">
+                Meeting spot (optional)
+                <select
+                  className="field mt-2"
+                  value={meetingSpot}
+                  onChange={(event) => setMeetingSpot(event.target.value)}
+                  aria-describedby={`${id}-note`}
+                >
+                  <option value="">No preference · {defaultLocation}</option>
+                  {availableLocations.map((location) => (
+                    <option key={location} value={location}>{location}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="text-link mt-1"
+                onClick={() =>
+                  setMeetingSpot(availableLocations[Math.floor(Math.random() * availableLocations.length)])
+                }
+              >
+                Choose for me
+                <SparkleIcon size={16} />
+              </button>
+            </div>
+          )}
+          <p id={`${id}-note`} className="text-xs leading-relaxed text-muted-foreground">
+            {textFirst
+              ? "Anyone with the link can read this plan. No passwords or access codes."
+              : "Suggested spots. Check availability at your event."}
+          </p>
+        </>
+      )}
+      {error && <p id={`${id}-error`} role="alert" className="text-sm text-danger">{error}</p>}
+      {published && unavailableReason && (
+        <p className="text-xs leading-relaxed text-muted-foreground">{unavailableReason}</p>
+      )}
+      <button
+        type="submit"
+        disabled={published && (busy || Boolean(unavailableReason))}
+        className={`${primary ? "button-primary" : "button-secondary"} w-full`}
+      >
+        {busy ? "Creating invitation…" : label}
+        <ArrowRightIcon size={18} />
+      </button>
+      {showPrompt && !published && <PublishPrompt onGetStarted={onGetStarted} />}
+      <p className="text-center text-xs leading-relaxed text-muted-foreground">
+        Each person accepts from their own published profile.
+      </p>
+    </form>
+  );
+}
+
 function ProfileEditor({
   profile,
   onSave,
@@ -285,8 +459,7 @@ function ProfileEditor({
   return (
     <Modal title="What brings you here?" onClose={onClose}>
       <p className="-mt-2 mb-6 leading-relaxed text-muted-foreground">
-        A little context makes a much better introduction. You don’t have to be
-        an expert to be helpful.
+        Share what you can offer and what you need.
       </p>
       <form onSubmit={submit} noValidate className="space-y-5">
         <label className="block text-sm font-medium">
@@ -612,12 +785,14 @@ function PersonCard({
 }
 
 function ShareCard({
+  eventId,
   profile,
   notify,
   invitationId,
   preview,
   onDiscover,
 }: {
+  eventId: EventId;
   profile: Profile;
   notify: (message: string) => void;
   invitationId: string | null;
@@ -634,7 +809,7 @@ function ShareCard({
     setLink("");
     const id = preview ? "circle" : invitationId;
     if (!id) return;
-    const url = `${window.location.origin}/?invite=${encodeURIComponent(id)}`;
+    const url = `${window.location.origin}/?event=${eventId}&invite=${encodeURIComponent(id)}`;
     setLink(url);
     import("qrcode")
       .then((module) =>
@@ -653,7 +828,7 @@ function ShareCard({
     return () => {
       active = false;
     };
-  }, [invitationId, preview]);
+  }, [invitationId, preview, eventId]);
   async function copy() {
     try {
       await navigator.clipboard.writeText(link);
@@ -717,10 +892,10 @@ function ShareCard({
         </h2>
         <p className="mt-4 max-w-md leading-relaxed text-muted-foreground">
           {preview
-            ? "Try a sample invitation by showing this QR code or putting its link on your NFC card."
+            ? "Share this sample invitation by QR or NFC."
             : invitationId
-              ? "Share this detour with the people you invited. A tap opens the invitation; each person accepts from their own browser."
-              : "Create an invitation with someone you’d like to meet. Then put its link on your NFC card or share the QR code."}
+              ? "Share with your invitees by QR or NFC. Each accepts from their own browser."
+              : "Create an invitation, then share it by QR or NFC."}
         </p>
         {preview || invitationId ? (
           <>
@@ -730,7 +905,7 @@ function ShareCard({
             >
               {preview
                 ? "Sample invitation link"
-                : "This detour’s invitation link"}
+                : "Invitation link"}
             </label>
             <input
               id="share-link"
@@ -756,19 +931,32 @@ function ShareCard({
         )}
         <p className="mt-6 max-w-md text-sm leading-relaxed text-muted-foreground">
           {preview
-            ? "Sample people, not a live invitation. A phone needs a hosted URL it can reach; localhost only opens on this computer."
-            : "Invitations expire after 24 hours. Use the browser where you published your introduction. The card opens the invitation; it does not verify your identity."}
+            ? "Fictional attendees. Use a hosted URL for phone demos; localhost stays on this computer."
+            : "Invitations expire after 24 hours. Accept in the browser where you published. NFC doesn’t verify identity."}
         </p>
       </div>
     </div>
   );
 }
 
-export default function DetourApp() {
+export default function DetourApp({
+  initialEventId,
+}: {
+  initialEventId: EventId;
+}) {
+  const eventId = initialEventId;
+  const selectedEvent = events.find((event) => event.id === eventId)!;
+  const storageKey =
+    eventId === DEFAULT_EVENT_ID
+      ? "detour-preview-v1"
+      : `detour-preview-v1:${eventId}`;
+  const [eventAccess, setEventAccess] = useState<{
+    required: boolean;
+    granted: boolean;
+  } | null>(null);
   const [view, setView] = useState<View>("discover");
   // A displayed sample is not a draft until explicitly saved or replaced by a published profile.
   const [draft, setProfile] = useState<Profile | null>(null);
-  const profile = draft ?? defaultProfile;
   const [saved, setSaved] = useState<string[]>([]);
   const [overlay, setOverlayState] = useState<Overlay>(null);
   const overlayRef = useRef<Overlay>(null);
@@ -779,6 +967,17 @@ export default function DetourApp() {
   const [ready, setReady] = useState(false);
   const [storageError, setStorageError] = useState(false);
   const [network, setNetwork] = useState<Network | null>(null);
+  const profile =
+    draft ??
+    (network?.mode === "preview"
+      ? defaultProfile
+      : ({
+          name: "",
+          offer: "",
+          ask: "",
+          mode: "In person",
+          available: true,
+        } as Profile));
   const [networkError, setNetworkError] = useState("");
   const [networkLoading, setNetworkLoading] = useState(true);
   const [reload, setReload] = useState(0);
@@ -801,6 +1000,7 @@ export default function DetourApp() {
   const hasDraft = useRef(false);
   const connected = network?.mode === "connected";
   const preview = network?.mode === "preview";
+  const locked = Boolean(eventAccess?.required && !eventAccess.granted);
   const invitationId = overlay?.type === "invitation" ? overlay.id : null;
   const activeInvitation =
     invitationDetail?.id === invitationId ? invitationDetail : null;
@@ -846,9 +1046,38 @@ export default function DetourApp() {
   useEffect(() => {
     if (!ready) return;
     const controller = new AbortController();
+    requestJson<{ required: boolean; granted: boolean }>(
+      `/api/events/access?event=${eventId}`,
+      { signal: controller.signal },
+    )
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        setEventAccess(result);
+        if (!result.granted) {
+          setNetwork(null);
+          setNetworkLoading(false);
+        }
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setNetworkError(
+          error instanceof Error
+            ? error.message
+            : "Couldn’t check event access. Try again.",
+        );
+        setNetworkLoading(false);
+      });
+    return () => controller.abort();
+  }, [ready, eventId, reload]);
+
+  useEffect(() => {
+    if (!ready || !eventAccess?.granted) return;
+    const controller = new AbortController();
     setNetworkLoading(true);
     setNetworkError("");
-    requestJson<Network>("/api/network", { signal: controller.signal })
+    requestJson<Network>(`/api/network?event=${eventId}`, {
+      signal: controller.signal,
+    })
       .then((result) => {
         if (controller.signal.aborted) return;
         setNetwork(result);
@@ -877,7 +1106,7 @@ export default function DetourApp() {
         if (!controller.signal.aborted) setNetworkLoading(false);
       });
     return () => controller.abort();
-  }, [ready, reload]);
+  }, [ready, reload, eventId, eventAccess?.granted]);
 
   useEffect(() => {
     if (!connected || (!query.trim() && !availableOnly)) {
@@ -892,6 +1121,7 @@ export default function DetourApp() {
     setSearchError("");
     const timeout = window.setTimeout(() => {
       const params = new URLSearchParams({
+        event: eventId,
         q: query,
         available: String(availableOnly),
       });
@@ -934,7 +1164,7 @@ export default function DetourApp() {
     const controller = new AbortController();
     setInvitationsLoading(true);
     setInvitationsError("");
-    requestJson<{ invitations: Invitation[] }>("/api/invitations", {
+    requestJson<{ invitations: Invitation[] }>(`/api/invitations?event=${eventId}`, {
       signal: controller.signal,
     })
       .then((result) => {
@@ -955,12 +1185,12 @@ export default function DetourApp() {
   }, [connected, network?.me?.id, inviteReload]);
 
   useEffect(() => {
-    if (!invitationId) return;
+    if (!invitationId || !eventAccess?.granted) return;
     const controller = new AbortController();
     setActiveInvitation(null);
     setInvitationError("");
     requestJson<Invitation>(
-      `/api/invitations/${encodeURIComponent(invitationId)}`,
+      `/api/invitations/${encodeURIComponent(invitationId)}?event=${eventId}`,
       { signal: controller.signal },
     )
       .then((result) => {
@@ -975,7 +1205,7 @@ export default function DetourApp() {
           );
       });
     return () => controller.abort();
-  }, [invitationId, inviteReload]);
+  }, [invitationId, inviteReload, eventId, eventAccess?.granted]);
 
   useEffect(() => {
     setActionError("");
@@ -1056,6 +1286,10 @@ export default function DetourApp() {
     searchRef.current?.focus();
   }
   async function publish() {
+    if (!eventAccess?.granted) {
+      setOverlay({ type: "event-access" });
+      return;
+    }
     if (validateProfile(profile)) {
       setOverlay({ type: "profile" });
       return;
@@ -1064,7 +1298,7 @@ export default function DetourApp() {
     setActionError("");
     try {
       const me = await requestJson<{ id: string; profile: Profile }>(
-        "/api/profile",
+        `/api/profile?event=${eventId}`,
         { method: "POST", body: JSON.stringify(profile) },
       );
       setNetwork((current) => (current ? { ...current, me } : current));
@@ -1085,7 +1319,7 @@ export default function DetourApp() {
     setBusy(true);
     setActionError("");
     try {
-      await requestJson("/api/profile", { method: "DELETE" });
+      await requestJson(`/api/profile?event=${eventId}`, { method: "DELETE" });
       setNetwork((current) => (current ? { ...current, me: null } : current));
       setInvitations([]);
       setShareId(null);
@@ -1103,21 +1337,22 @@ export default function DetourApp() {
       setBusy(false);
     }
   }
-  async function createInvite(members: Person[]) {
+  async function createInvite(members: Person[], meetingSpot: string) {
+    if (!network?.me || busy) return;
     const sourceOverlay = overlayRef.current;
     setBusy(true);
     setActionError("");
     try {
-      const invitation = await requestJson<Invitation>("/api/invitations", {
-        method: "POST",
-        body: JSON.stringify({
-          memberIds: members.map((member) => member.id),
-          meetingSpot:
-            matchingProfile?.mode === "Text first"
-              ? "Agree a text channel together"
-              : "Coffee bar",
-        }),
-      });
+      const invitation = await requestJson<Invitation>(
+        `/api/invitations?event=${encodeURIComponent(eventId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            memberIds: members.map((member) => member.id),
+            meetingSpot,
+          }),
+        },
+      );
       setInvitations((current) => [
         invitation,
         ...current.filter((item) => item.id !== invitation.id),
@@ -1130,10 +1365,13 @@ export default function DetourApp() {
       }
       setToast("Invitation created. Find it in My detours to share the link.");
     } catch (error) {
-      const message =
+      // A timed-out write can still have saved the invitation.
+      setInviteReload((value) => value + 1);
+      const reason =
         error instanceof Error
           ? error.message
           : "Couldn’t create this invitation.";
+      const message = `${reason} Check My detours before creating another.`;
       if (overlayRef.current === sourceOverlay) setActionError(message);
       else setToast(message);
     } finally {
@@ -1145,7 +1383,7 @@ export default function DetourApp() {
     setActionError("");
     try {
       const invitation = await requestJson<Invitation>(
-        `/api/invitations/${encodeURIComponent(id)}/accept`,
+        `/api/invitations/${encodeURIComponent(id)}/accept?event=${eventId}`,
         { method: "POST", body: "{}" },
       );
       if (
@@ -1172,6 +1410,17 @@ export default function DetourApp() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function unlockEvent(code: string) {
+    const access = await requestJson<{ required: boolean; granted: boolean }>(
+      `/api/events/access?event=${eventId}`,
+      { method: "POST", body: JSON.stringify({ code }) },
+    );
+    setNetworkError("");
+    setNetworkLoading(true);
+    setEventAccess(access);
+    if (overlayRef.current?.type === "event-access") setOverlay(null);
   }
 
   return (
@@ -1210,7 +1459,7 @@ export default function DetourApp() {
                 key={id}
                 onClick={() => navigate(id)}
                 aria-current={view === id ? "page" : undefined}
-                className={`flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs sm:flex-none sm:gap-2 sm:px-4 sm:text-sm ${view === id ? "bg-subtle font-medium" : "text-muted-foreground hover:bg-subtle/60 hover:text-foreground"}`}
+                className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-xs sm:flex-none sm:flex-row sm:gap-2 sm:px-4 sm:text-sm ${view === id ? "bg-subtle font-medium" : "text-muted-foreground hover:bg-subtle/60 hover:text-foreground"}`}
               >
                 <Icon size={18} weight={view === id ? "fill" : "regular"} />
                 {label}
@@ -1245,23 +1494,68 @@ export default function DetourApp() {
         className="mx-auto w-full max-w-7xl flex-1 px-5 pb-16 sm:px-8 lg:px-12"
       >
         <div className="flex flex-wrap items-center justify-between gap-3 py-6 text-xs sm:text-sm">
-          <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <MapPinIcon size={16} />
-            <span className="font-medium">Cloud Native Hackathon</span>
-            <span className="text-muted-foreground">
-              / {preview ? "Demo playground" : "Meet your next collaborator"}
-            </span>
-          </p>
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">
-            <span className="size-1.5 rounded-full bg-accent" />
-            {networkError
-              ? "Network unavailable"
-              : connected
-                ? "Event network"
-                : preview
-                  ? "Demo playground · fictional people"
-                  : "Connecting…"}
-          </span>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+            <label
+              htmlFor="conference"
+              className="flex items-center gap-1.5 text-xs text-muted-foreground"
+            >
+              <MapPinIcon size={16} />
+              Conference
+            </label>
+            <select
+              id="conference"
+              value={eventId}
+              onChange={(e) =>
+                window.location.assign(
+                  `/?event=${encodeURIComponent(e.target.value)}`,
+                )
+              }
+              className="field w-auto max-w-full py-2 font-medium sm:text-sm"
+            >
+              {events.map((event) => (
+                <option key={event.id} value={event.id}>
+                  {event.name}
+                </option>
+              ))}
+            </select>
+            <button
+              className="text-link text-muted-foreground"
+              onClick={() => setOverlay({ type: "event-request" })}
+            >
+              <PlusIcon size={16} />
+              Add your event
+            </button>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              className="inline-flex size-11 items-center justify-center rounded-full hover:bg-subtle"
+              aria-label="How event access works"
+              onClick={() => setOverlay({ type: "event-access" })}
+            >
+              <QuestionIcon size={20} />
+            </button>
+            <button
+              onClick={() => setOverlay({ type: "event-access" })}
+              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-border px-3 py-2 text-xs"
+            >
+              {locked ? (
+                <LockSimpleIcon size={16} />
+              ) : (
+                <span
+                  className={`size-1.5 rounded-full ${connected ? "bg-success" : "bg-muted-foreground"}`}
+                />
+              )}
+              {networkError
+                ? "Network unavailable"
+                : locked
+                  ? "Event network · locked"
+                  : connected
+                    ? "Event network"
+                    : preview
+                      ? "Demo playground · fictional people"
+                      : "Connecting…"}
+            </button>
+          </div>
         </div>
 
         {networkError && (
@@ -1300,12 +1594,14 @@ export default function DetourApp() {
                   Good things happen
                   <br className="hidden sm:block" /> off the agenda.
                 </h1>
-                <p className="mt-6 max-w-xl text-base leading-relaxed text-muted-foreground sm:text-lg">
-                  A fresh perspective. A problem unstuck. Your next
-                  collaborator.
-                  <br className="hidden md:block" /> Take a little detour and
-                  see who you find.
-                </p>
+                <div className="mt-6 max-w-2xl space-y-3 text-pretty text-base leading-relaxed text-muted-foreground">
+                  <p>
+                    Find people at {selectedEvent.name} through shared skills and needs.
+                  </p>
+                  <p>
+                    Connect one-to-one or in a three-person circle.
+                  </p>
+                </div>
               </div>
               <RouteArtwork />
             </section>
@@ -1343,7 +1639,7 @@ export default function DetourApp() {
                         A small circle. A big unlock.
                       </h2>
                       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                        You help one person. Another helps you. Everyone brings something useful.
+                        You help someone. Someone helps you.
                       </p>
                     </div>
                     <UsersThreeIcon
@@ -1357,8 +1653,7 @@ export default function DetourApp() {
                       <CircleDiagram members={circle} selfId={self.id} />
                       <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-t border-border pt-5">
                         <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-                          Shared keywords connect every offer to someone else’s
-                          ask. No AI scoring.{" "}
+                          Matched by shared keywords, not AI.{" "}
                           {connected && "Uses your published introduction."}
                         </p>
                         <button className="button-primary" onClick={openCircle}>
@@ -1377,25 +1672,38 @@ export default function DetourApp() {
                         <h3 className="text-xl font-medium">
                           {networkLoading
                             ? "Finding your next detour…"
-                            : !network
+                          : locked
+                            ? "Unlock your event network."
+                          : !network
                               ? "The network isn’t ready yet."
                               : connected && !self
-                                ? "Your circle starts with an introduction."
+                                ? "Start with an introduction."
                                 : !self?.available
                                   ? "Take a detour when you’re ready."
-                                  : "Your next connection is still taking shape."}
+                                  : "No circle yet."}
                         </h3>
                         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
                           {networkLoading
-                            ? "Checking the event network for people who can help one another."
-                            : !network
+                            ? "Checking for connections…"
+                          : locked
+                            ? "Enter the event code to see attendees. Your draft stays private until published."
+                          : !network
                               ? "Retry the network to discover people."
                               : connected && !self
-                                ? "Add what you can offer and what you need, then publish your introduction to find people in the same connection mode."
+                                ? "Publish your offer and ask to find connections."
                                 : !self?.available
-                                  ? "Turn on your availability to see matching suggestions. Publish the update if your introduction is already live."
-                                  : "A circle needs three people who can each help the next. Matching checks shared keywords in offers and asks."}
+                                  ? "Turn on availability. If published, update your introduction."
+                                  : "A circle needs three people who can each help the next."}
                         </p>
+                        {locked && (
+                          <button
+                            className="button-primary mt-4"
+                            onClick={() => setOverlay({ type: "event-access" })}
+                          >
+                            Unlock event network
+                            <ArrowRightIcon size={16} />
+                          </button>
+                        )}
                         {connected && !self && (
                           <button
                             className="text-link mt-2"
@@ -1509,9 +1817,9 @@ export default function DetourApp() {
                       <p className="text-xs leading-relaxed text-muted-foreground">
                         {network.me
                           ? draftChanged
-                            ? "You have unpublished changes. Matching still uses your published introduction."
-                            : "Your introduction is published. This browser owns your profile and invitation responses."
-                          : "Publishing shares your name, offer, ask, availability, and connection mode with the event network. Your draft is private until then."}
+                            ? "Unpublished changes. Matching uses your published introduction."
+                            : "Published. Manage your introduction and responses from this browser."
+                          : "Publishing shares your name, offer, ask, availability and connection mode with this event. Your draft stays private until then."}
                       </p>
                       <button
                         onClick={publish}
@@ -1535,14 +1843,14 @@ export default function DetourApp() {
                       )}
                       <p className="text-xs leading-relaxed text-muted-foreground">
                         {network.me
-                          ? "Withdrawing also closes your active invitations. Keep this browser’s cookies to return to your profile."
-                          : "No account needed. Use this browser to return to your published introduction."}
+                          ? "Withdrawing closes active invitations. Keep this browser’s cookies to manage your profile."
+                          : "No account needed. Return in this browser."}
                       </p>
                     </div>
                   )}
                   {preview && (
                     <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-                      Local draft. People in this playground are fictional.
+                      Local draft. Fictional attendees.
                     </p>
                   )}
                 </section>
@@ -1577,8 +1885,7 @@ export default function DetourApp() {
                     Different paths. Good people.
                   </h2>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Start with something you can give. Or something you’re
-                    curious about.
+                    Find a skill or a fresh perspective.
                   </p>
                 </div>
                 <div className="relative w-full sm:w-72">
@@ -1693,10 +2000,10 @@ export default function DetourApp() {
                   </h3>
                   <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
                     {hasFilters
-                      ? "Try another skill or clear your filters to see everyone."
+                      ? "Try another skill or clear your filters."
                       : network.me
-                        ? "Your introduction is live. Check back as more people join."
-                        : "Share what you can offer and what you need, so the next person can find you."}
+                        ? "Your introduction is live. Check back for more people."
+                        : "Publish your offer and ask so others can find you."}
                   </p>
                   <button
                     onClick={
@@ -1751,20 +2058,21 @@ export default function DetourApp() {
               Your next detours.
             </h1>
             <p className="mb-10 mt-4 max-w-xl leading-relaxed text-muted-foreground">
-              Keep the connections you’re curious about in one place. Saved
-              here, ready when you are.
+              Your saved people and invitations.
             </p>
             {connected && (
               <div className="mb-10">
                 <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                   <h2 className="text-2xl font-medium">Your invitations</h2>
-                  <button
-                    onClick={() => setInviteReload((value) => value + 1)}
-                    disabled={invitationsLoading || !network.me}
+                  <PublishAction
+                    published={Boolean(network.me)}
+                    onGetStarted={() => setOverlay({ type: "profile" })}
+                    onAction={() => setInviteReload((value) => value + 1)}
+                    disabled={invitationsLoading}
                     className="text-link"
                   >
                     {invitationsLoading ? "Refreshing…" : "Refresh responses"}
-                  </button>
+                  </PublishAction>
                 </div>
                 {invitationsError && (
                   <p
@@ -1816,8 +2124,8 @@ export default function DetourApp() {
                     {invitationsLoading
                       ? "Loading invitations…"
                       : network.me
-                        ? "No active invitations yet. Meet a circle or invite someone from Discover."
-                        : "Publish your introduction to create invitations and respond from this browser."}
+                        ? "No invitations yet. Invite someone from Discover."
+                        : "Publish your introduction to create and accept invitations."}
                   </p>
                 )}
               </div>
@@ -1831,8 +2139,7 @@ export default function DetourApp() {
                   Your route is wide open.
                 </h2>
                 <p className="mx-auto mt-3 max-w-sm px-4 text-sm leading-relaxed text-muted-foreground">
-                  Meet a circle or save someone you’d like to talk to. Your
-                  first detour starts with a little curiosity.
+                  Save someone you’d like to meet from Discover.
                 </p>
                 <button
                   onClick={() => navigate("discover")}
@@ -1864,9 +2171,7 @@ export default function DetourApp() {
                       <CircleDiagram members={circle} selfId={self.id} />
                     ) : (
                       <p className="text-sm leading-relaxed text-muted-foreground">
-                        There isn’t a complete circle for your introduction
-                        right now. This bookmark will show the latest suggestion
-                        when one is available.
+                        No circle yet. Your next suggestion will appear here.
                       </p>
                     )}
                     <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-t border-border pt-5">
@@ -1890,8 +2195,7 @@ export default function DetourApp() {
                 {savedPeople.length === 0 &&
                   saved.some((id) => id !== "circle") && (
                     <p className="text-sm leading-relaxed text-muted-foreground">
-                      Your saved people aren’t in the current discovery list.
-                      Refresh the network or explore the people available now.
+                      Saved people aren’t in this list. Refresh or explore Discover.
                     </p>
                   )}
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -1936,6 +2240,7 @@ export default function DetourApp() {
               </p>
             )}
             <ShareCard
+              eventId={eventId}
               profile={network?.me?.profile ?? profile}
               notify={setToast}
               invitationId={selectedShare?.id ?? null}
@@ -1950,8 +2255,7 @@ export default function DetourApp() {
             role="alert"
             className="mt-6 rounded-lg bg-accent-subtle p-4 text-sm"
           >
-            Your browser couldn’t save changes on this device. You can keep
-            exploring; your changes may be lost when you close this page.
+            Changes couldn’t be saved. Copy your introduction before closing.
           </p>
         )}
       </main>
@@ -1995,14 +2299,14 @@ export default function DetourApp() {
       )}
       {overlay?.type === "circle" && (
         <Modal
-          title="Three people. A little possibility."
+          title="Your circle"
           onClose={() => setOverlay(null)}
         >
           <p className="mb-6 leading-relaxed text-muted-foreground">
             {overlay.preview
-              ? "A sample circle with fictional attendees. "
-              : "Everyone has a missing piece. "}
-            These shared keywords connect each offer to the next person’s ask.
+              ? "Fictional attendees. "
+              : ""}
+            Shared keywords connect each offer to the next person’s ask.
           </p>
           <div className="space-y-3">
             {overlay.members.map((member, i) => {
@@ -2035,7 +2339,7 @@ export default function DetourApp() {
               A good place to start
             </p>
             <p className="mt-2 text-pretty font-display text-xl leading-relaxed">
-              “What’s the one thing you’d love to get unstuck today?”
+              “What would you like help with today?”
             </p>
           </div>
           {actionError && (
@@ -2053,38 +2357,44 @@ export default function DetourApp() {
                 <BookmarkSimpleIcon size={18} />
               </button>
               <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
-                A local bookmark that follows your current introduction. No live
-                invitation is created.
+                Saved locally. Follows your latest introduction; creates no invitation.
               </p>
             </>
           ) : (
-            <>
-              <button
-                onClick={() => createInvite(overlay.members)}
-                disabled={busy}
-                className="button-primary mt-6 w-full"
-              >
-                {busy ? "Creating invitation…" : "Create circle invitation"}
-                <ArrowRightIcon size={18} />
-              </button>
-              <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
-                Creates a shareable link for these people. Each person accepts
-                using their own published profile.
-              </p>
-            </>
+            <InvitationPlanForm
+              key={matchingProfile?.mode}
+              mode={matchingProfile?.mode ?? profile.mode}
+              locations={selectedEvent.locations}
+              published={Boolean(network?.me)}
+              busy={busy}
+              label="Create circle invitation"
+              primary
+              onGetStarted={() => setOverlay({ type: "profile" })}
+              onCreate={(meetingSpot) => createInvite(overlay.members, meetingSpot)}
+            />
           )}
         </Modal>
       )}
       {overlay?.type === "invitation" && (
         <Modal title="A detour, together." onClose={() => setOverlay(null)}>
-          {invitationError ? (
+          {locked ? (
+            <EventAccessForm
+              name={selectedEvent.name}
+              granted={false}
+              required
+              onUnlock={unlockEvent}
+            />
+          ) : invitationError || networkError ? (
             <div role="alert">
               <p className="text-sm leading-relaxed text-danger">
-                {invitationError}
+                {invitationError || networkError}
               </p>
               <button
                 className="button-secondary mt-4"
-                onClick={() => setInviteReload((value) => value + 1)}
+                onClick={() => {
+                  setInviteReload((value) => value + 1);
+                  setReload((value) => value + 1);
+                }}
               >
                 Retry invitation
               </button>
@@ -2173,18 +2483,18 @@ export default function DetourApp() {
                 </div>
               ) : (
                 <p className="mt-5 rounded-xl bg-accent-subtle p-4 text-sm leading-relaxed">
-                  This invitation is for the people listed above. To accept your
-                  place, open it in the original browser where you published
-                  your introduction. A link or NFC tap doesn’t let another guest
-                  claim a place.
+                  Listed invitees only. Accept in the browser where you published;
+                  the link alone can’t claim a place.
                 </p>
               )}
-              <button
+              <PublishAction
                 className="text-link mt-4"
-                onClick={() => setInviteReload((value) => value + 1)}
+                published={Boolean(network?.me)}
+                onGetStarted={() => setOverlay({ type: "profile" })}
+                onAction={() => setInviteReload((value) => value + 1)}
               >
                 Refresh responses
-              </button>
+              </PublishAction>
             </>
           )}
         </Modal>
@@ -2249,23 +2559,24 @@ export default function DetourApp() {
           </button>
           {connected && (
             <>
-              <button
-                disabled={busy || !personCanInvite}
-                onClick={() => {
+              <InvitationPlanForm
+                key={`${overlay.person.id}-${matchingProfile?.mode}`}
+                mode={matchingProfile?.mode ?? profile.mode}
+                locations={selectedEvent.locations}
+                published={Boolean(network?.me)}
+                busy={busy}
+                label="Create one-to-one invitation"
+                unavailableReason={
+                  personCanInvite
+                    ? undefined
+                    : "Both people must be available and use the same connection mode."
+                }
+                onGetStarted={() => setOverlay({ type: "profile" })}
+                onCreate={(meetingSpot) => {
                   if (self && personCanInvite)
-                    createInvite([self, overlay.person]);
+                    createInvite([self, overlay.person], meetingSpot);
                 }}
-                className="button-secondary mt-3 w-full"
-              >
-                {busy ? "Creating invitation…" : "Create one-to-one invitation"}
-                <ArrowRightIcon size={18} />
-              </button>
-              {!personCanInvite && (
-                <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                  Publish your introduction and make sure you’re both available
-                  in the same connection mode to create an invitation.
-                </p>
-              )}
+              />
               {actionError && (
                 <p role="alert" className="mt-3 text-sm text-danger">
                   {actionError}
@@ -2280,25 +2591,39 @@ export default function DetourApp() {
           </p>
         </Modal>
       )}
+      {overlay?.type === "event-access" && (
+        <Modal title="Your event network" onClose={() => setOverlay(null)}>
+          <EventAccessForm
+            name={selectedEvent.name}
+            granted={Boolean(eventAccess?.granted)}
+            required={eventAccess?.required ?? true}
+            onUnlock={unlockEvent}
+          />
+        </Modal>
+      )}
+      {overlay?.type === "event-request" && (
+        <Modal title="Add your event" onClose={() => setOverlay(null)}>
+          <EventRequestForm />
+        </Modal>
+      )}
       {overlay?.type === "about" && (
         <Modal title="Take the scenic route." onClose={() => setOverlay(null)}>
           <p className="leading-relaxed text-muted-foreground">
-            The best part of a conference often isn’t on the schedule. Detour
-            helps you find a reason to start a conversation.
+            Find people who can help—and people you can help.
           </p>
           <ol className="my-7 space-y-6">
             {[
               {
                 title: "Bring something.",
-                text: "A skill, a fresh pair of eyes, or a good question. Tell people what you can share and what you’re figuring out.",
+                text: "Share what you can offer and what you need.",
               },
               {
                 title: "Find your missing piece.",
-                text: "Explore people with different skills, or a small circle where everyone can help someone else.",
+                text: "Find a person or a circle with complementary skills.",
               },
               {
                 title: "See where it goes.",
-                text: "Start with ten minutes and one question. Leave with a useful perspective and a reason to stay in touch.",
+                text: "Choose a meeting spot or text channel and share an invitation.",
               },
             ].map((step, i) => (
               <li key={step.title} className="flex gap-4">
@@ -2316,10 +2641,9 @@ export default function DetourApp() {
           </ol>
           <p className="rounded-xl bg-subtle p-4 text-sm leading-relaxed text-muted-foreground">
             {preview
-              ? "This playground uses fictional attendees. Your draft and bookmarks stay in your browser."
-              : "Your draft and bookmarks stay in your browser. Publishing shares your introduction with the event network. Your browser’s cookie owns your published identity."}{" "}
-            Circles use shared keywords, not AI. Invitations require each
-            member’s own response; no email or messages are sent.
+              ? "Fictional attendees. Drafts and bookmarks stay in this browser."
+              : "Drafts and bookmarks stay local. Published introductions are shared with the event; this browser’s cookie controls yours."}{" "}
+            Circles use keywords, not AI. Each invitee accepts separately. No messages are sent.
           </p>
         </Modal>
       )}

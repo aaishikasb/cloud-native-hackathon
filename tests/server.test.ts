@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { defaultProfile } from "../lib/detour.ts";
+import { DEFAULT_EVENT_ID, type EventId } from "../lib/events.ts";
 import {
   ApiError,
   guestCookie,
@@ -8,7 +9,11 @@ import {
   readJson,
   requireSameOrigin,
 } from "../lib/server/http.ts";
-import { assertOpen, parseInvitation } from "../lib/server/network.ts";
+import {
+  assertOpen,
+  networkReady,
+  parseInvitation,
+} from "../lib/server/network.ts";
 import { GET as network } from "../app/api/network/route.ts";
 import {
   POST as publish,
@@ -37,20 +42,25 @@ function request(
   });
 }
 
+let elasticInstance = 0;
 function fakeElastic(t: TestContext) {
   const previous = {
     url: process.env.ELASTICSEARCH_URL,
     key: process.env.ELASTICSEARCH_API_KEY,
     app: process.env.APP_URL,
+    codes: process.env.EVENT_ACCESS_CODES,
   };
-  process.env.ELASTICSEARCH_URL = "https://elastic.example.test";
+  const elasticOrigin = `https://elastic-${++elasticInstance}.example.test`;
+  process.env.ELASTICSEARCH_URL = elasticOrigin;
   process.env.ELASTICSEARCH_API_KEY = "test-only-not-a-real-key";
   process.env.APP_URL = origin;
+  delete process.env.EVENT_ACCESS_CODES;
   t.after(() => {
     for (const [key, value] of [
       ["ELASTICSEARCH_URL", previous.url],
       ["ELASTICSEARCH_API_KEY", previous.key],
       ["APP_URL", previous.app],
+      ["EVENT_ACCESS_CODES", previous.codes],
     ]) {
       if (value === undefined) delete process.env[key!];
       else process.env[key!] = value;
@@ -73,7 +83,7 @@ function fakeElastic(t: TestContext) {
       const url = new URL(
         typeof input === "string" || input instanceof URL ? input : input.url,
       );
-      assert.equal(url.origin, "https://elastic.example.test");
+      assert.equal(url.origin, elasticOrigin);
       assert.equal(
         (init.headers as Record<string, string>).Authorization,
         "ApiKey test-only-not-a-real-key",
@@ -92,24 +102,38 @@ function fakeElastic(t: TestContext) {
       }
       if (!docs) return json({ error: "index_not_found" }, 404);
       if (action === "_search") {
-        const filters = body.query?.term
-          ? [body.query]
-          : (body.query?.bool?.filter ?? []);
-        let hits = [...docs].map(([key, value]) => ({ _id: key, ...value }));
-        for (const filter of filters) {
+        type Filter = {
+          term?: Record<string, unknown>;
+          exists?: { field: string };
+          range?: { expiresAt?: unknown };
+          bool?: { filter?: Filter[]; should?: Filter[]; must_not?: Filter[] };
+        };
+        const matches = (
+          source: Record<string, unknown>,
+          filter: Filter,
+        ): boolean => {
           if (filter.term) {
             const [key, expected] = Object.entries(filter.term)[0];
-            hits = hits.filter((hit) =>
-              Array.isArray(hit._source[key])
-                ? (hit._source[key] as unknown[]).includes(expected)
-                : hit._source[key] === expected,
+            return Array.isArray(source[key])
+              ? source[key].includes(expected)
+              : source[key] === expected;
+          }
+          if (filter.exists) return source[filter.exists.field] !== undefined;
+          if (filter.range?.expiresAt)
+            return Date.parse(String(source.expiresAt)) > Date.now();
+          if (filter.bool) {
+            return (
+              (filter.bool.filter ?? []).every((item) => matches(source, item)) &&
+              (filter.bool.must_not ?? []).every((item) => !matches(source, item)) &&
+              (!filter.bool.should ||
+                filter.bool.should.some((item) => matches(source, item)))
             );
           }
-          if (filter.range?.expiresAt)
-            hits = hits.filter(
-              (hit) => Date.parse(String(hit._source.expiresAt)) > Date.now(),
-            );
-        }
+          return true;
+        };
+        let hits = [...docs]
+          .map(([key, value]) => ({ _id: key, ...value }))
+          .filter((hit) => matches(hit._source, body.query ?? {}));
         if (body.sort?.[0]?.createdAt === "desc")
           hits.sort((a, b) =>
             String(b._source.createdAt).localeCompare(
@@ -122,7 +146,7 @@ function fakeElastic(t: TestContext) {
         assert.deepEqual(Object.keys(body), ["ids"]);
         assert.equal(
           url.searchParams.get("_source"),
-          "name,offer,ask,mode,available,topic,role,location",
+          "eventId,name,offer,ask,mode,available,topic,role,location",
         );
         return json({
           docs: body.ids.map((key: string) =>
@@ -177,9 +201,18 @@ function fakeElastic(t: TestContext) {
   };
 }
 
-async function register(name: string) {
+async function register(
+  name: string,
+  eventId: EventId = DEFAULT_EVENT_ID,
+  existingCookie?: string,
+) {
   const response = await publish(
-    request("/api/profile", "POST", { ...defaultProfile, name }),
+    request(
+      `/api/profile?event=${eventId}`,
+      "POST",
+      { ...defaultProfile, name },
+      existingCookie,
+    ),
   );
   assert.equal(response.status, 200);
   const cookie = response.headers.get("Set-Cookie")!;
@@ -299,7 +332,7 @@ test("profile ownership is cookie-bound and public results omit owner hashes", a
     request("/api/profile", "DELETE", undefined, alice.cookie),
   );
   assert.equal(deleted.status, 200);
-  assert.match(deleted.headers.get("Set-Cookie")!, /Max-Age=0/);
+  assert.equal(deleted.headers.get("Set-Cookie"), null);
   assert.equal(store.indices.get("detour-people")!.size, 1);
 });
 
@@ -341,12 +374,17 @@ test("invitations require unique published members, availability, and matching p
   const alice = await register("Alice");
   const bob = await register("Bob");
   assert.throws(
-    () => parseInvitation({ memberIds: [alice.id, alice.id] }, alice.id),
+    () =>
+      parseInvitation({ memberIds: [alice.id, alice.id] }, alice.id, "In person"),
     ApiError,
   );
   assert.throws(
     () =>
-      parseInvitation({ memberIds: [bob.id, "not-a-published-id"] }, alice.id),
+      parseInvitation(
+        { memberIds: [bob.id, "not-a-published-id"] },
+        alice.id,
+        "In person",
+      ),
     ApiError,
   );
   await publish(
@@ -383,6 +421,59 @@ test("invitations require unique published members, availability, and matching p
     ),
   );
   assert.equal(response.status, 409);
+});
+
+test("text-first invitations require an explicit plan while in-person locations remain optional", async (t) => {
+  const store = fakeElastic(t);
+  const alice = await register("Alice");
+  const bob = await register("Bob");
+  const memberIds = [alice.id, bob.id];
+  const inPerson = await create(
+    request("/api/invitations", "POST", { memberIds }, alice.cookie),
+  );
+  assert.equal(inPerson.status, 201);
+  assert.equal((await inPerson.json()).meetingSpot, "Coffee bar");
+
+  for (const [name, person] of [["Alice", alice], ["Bob", bob]] as const) {
+    const updated = await publish(
+      request(
+        "/api/profile",
+        "POST",
+        { ...defaultProfile, name, mode: "Text first" },
+        person.cookie,
+      ),
+    );
+    assert.equal(updated.status, 200);
+  }
+  for (const meetingSpot of [undefined, "", "   "]) {
+    const rejected = await create(
+      request(
+        "/api/invitations",
+        "POST",
+        { memberIds, meetingSpot },
+        alice.cookie,
+      ),
+    );
+    assert.equal(rejected.status, 400);
+    assert.match(
+      (await rejected.json()).error,
+      /shared text channel or messaging plan/,
+    );
+  }
+  assert.equal(store.indices.get("detour-invites")!.size, 1);
+
+  const created = await create(
+    request(
+      "/api/invitations",
+      "POST",
+      { memberIds, meetingSpot: "  Event Discord, #introductions channel  " },
+      alice.cookie,
+    ),
+  );
+  assert.equal(created.status, 201);
+  const invitation = await created.json();
+  assert.equal(invitation.mode, "Text first");
+  assert.equal(invitation.meetingSpot, "Event Discord, #introductions channel");
 });
 
 test("concurrent acceptance preserves both people and repeated acceptance is idempotent", async (t) => {
@@ -577,4 +668,93 @@ test("uninvited browsers cannot accept; expiry and withdrawn profiles invalidate
     context(plan.id),
   );
   assert.equal(withdrawn.status, 410);
+});
+
+test("conferences isolate introductions while preserving one browser's ownership across switching and withdrawal", async (t) => {
+  const store = fakeElastic(t);
+  const alice = await register("Alice at the hackathon");
+  const bob = await register("Bob at the hackathon");
+  const kubeAlice = await register("Alice at KubeCon", "kubecon-na-2026", alice.cookie);
+  const kubeBob = await register("Bob at KubeCon", "kubecon-na-2026");
+  assert.equal(kubeAlice.cookie, alice.cookie);
+  assert.notEqual(kubeAlice.id, alice.id);
+  const hackathon = await (await network(request("/api/network", "GET", undefined, alice.cookie))).json();
+  assert.equal(hackathon.eventId, DEFAULT_EVENT_ID);
+  assert.equal(hackathon.me.id, alice.id);
+  assert.deepEqual(hackathon.people.map((person: { id: string }) => person.id), [bob.id]);
+  const kubecon = await (await network(request("/api/network?event=kubecon-na-2026", "GET", undefined, alice.cookie))).json();
+  assert.equal(kubecon.me.id, kubeAlice.id);
+  assert.deepEqual(kubecon.people.map((person: { id: string }) => person.id), [kubeBob.id]);
+  const withdrawn = await withdraw(request("/api/profile?event=kubecon-na-2026", "DELETE", undefined, alice.cookie));
+  assert.equal(withdrawn.status, 200);
+  assert.equal(withdrawn.headers.get("Set-Cookie"), null);
+  const stillOwned = await (await network(request("/api/network", "GET", undefined, alice.cookie))).json();
+  assert.equal(stillOwned.me.id, alice.id);
+  assert.equal(store.indices.get("detour-people")!.get(alice.id)!._source.eventId, DEFAULT_EVENT_ID);
+  const unknown = await network(request("/api/network?event=unknown"));
+  assert.equal(unknown.status, 400);
+});
+
+test("invitation reads, lists, creation, and acceptance cannot cross conference boundaries", async (t) => {
+  fakeElastic(t);
+  const alice = await register("Alice");
+  const bob = await register("Bob");
+  const kubeAlice = await register("Alice KubeCon", "kubecon-na-2026", alice.cookie);
+  const kubeBob = await register("Bob KubeCon", "kubecon-na-2026", bob.cookie);
+  const crossed = await create(request("/api/invitations", "POST", { memberIds: [alice.id, kubeBob.id] }, alice.cookie));
+  assert.equal(crossed.status, 410);
+  const made = await create(request("/api/invitations?event=kubecon-na-2026", "POST", { memberIds: [kubeAlice.id, kubeBob.id] }, alice.cookie));
+  assert.equal(made.status, 201);
+  const plan = await made.json();
+  assert.equal(plan.eventId, "kubecon-na-2026");
+  assert.equal((await invitation(request(`/api/invitations/${plan.id}`, "GET", undefined, bob.cookie), context(plan.id))).status, 404);
+  assert.equal((await accept(request(`/api/invitations/${plan.id}/accept`, "POST", undefined, bob.cookie), context(plan.id))).status, 404);
+  const wrongList = await (await list(request("/api/invitations", "GET", undefined, alice.cookie))).json();
+  assert.deepEqual(wrongList.invitations, []);
+  const rightList = await (await list(request("/api/invitations?event=kubecon-na-2026", "GET", undefined, alice.cookie))).json();
+  assert.deepEqual(rightList.invitations.map((item: { id: string }) => item.id), [plan.id]);
+  const accepted = await accept(request(`/api/invitations/${plan.id}/accept?event=kubecon-na-2026`, "POST", undefined, bob.cookie), context(plan.id));
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(new Set((await accepted.json()).acceptedIds), new Set([kubeAlice.id, kubeBob.id]));
+});
+
+test("legacy introductions and invitations remain in the hackathon only", async (t) => {
+  const store = fakeElastic(t);
+  const alice = await register("Legacy Alice");
+  const bob = await register("Legacy Bob");
+  const plan = await (await create(request("/api/invitations", "POST", { memberIds: [alice.id, bob.id] }, alice.cookie))).json();
+  for (const document of store.indices.get("detour-people")!.values()) delete document._source.eventId;
+  delete store.indices.get("detour-invites")!.get(plan.id)!._source.eventId;
+  const oldNetwork = await (await network(request("/api/network", "GET", undefined, alice.cookie))).json();
+  assert.equal(oldNetwork.me.id, alice.id);
+  assert.equal(oldNetwork.people[0].id, bob.id);
+  const newNetwork = await (await network(request("/api/network?event=kubecon-na-2026", "GET", undefined, alice.cookie))).json();
+  assert.equal(newNetwork.me, null);
+  assert.deepEqual(newNetwork.people, []);
+  const legacyInvite = await invitation(request(`/api/invitations/${plan.id}`, "GET", undefined, bob.cookie), context(plan.id));
+  assert.equal(legacyInvite.status, 200);
+  assert.equal((await legacyInvite.json()).eventId, DEFAULT_EVENT_ID);
+  const otherEvent = await invitation(request(`/api/invitations/${plan.id}?event=kubecon-na-2026`, "GET", undefined, bob.cookie), context(plan.id));
+  assert.equal(otherEvent.status, 404);
+});
+
+test("event access gates every attendee API before data access while readiness stays independent", async (t) => {
+  const store = fakeElastic(t);
+  process.env.EVENT_ACCESS_CODES = JSON.stringify({
+    "cloud-native-hackathon": "test-hackathon-access",
+    "kubecon-na-2026": "test-kubecon-access",
+  });
+  const id = "12345678-1234-1234-1234-123456789012";
+  const responses = await Promise.all([
+    network(request("/api/network")),
+    publish(request("/api/profile", "POST", defaultProfile)),
+    withdraw(request("/api/profile", "DELETE")),
+    list(request("/api/invitations")),
+    create(request("/api/invitations", "POST", { memberIds: [] })),
+    invitation(request(`/api/invitations/${id}`), context(id)),
+    accept(request(`/api/invitations/${id}/accept`, "POST"), context(id)),
+  ]);
+  assert.ok(responses.every((response) => response.status === 403));
+  assert.equal(store.calls.length, 0);
+  assert.deepEqual(await networkReady(), { status: "ready" });
 });
