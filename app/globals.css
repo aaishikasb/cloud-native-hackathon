@@ -1,0 +1,130 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8f9f5;
+  --foreground: #252822;
+  --muted-foreground: #63665d;
+  --border: #dfe1d8;
+  --accent: #ff733e;
+  --accent-foreground: #252822;
+  --ring: #9850c4;
+  --surface: #ffffff;
+  --subtle: #eff0e9;
+  --secondary: #e9def4;
+  --accent-subtle: #ffded0;
+  --success-subtle: #e3ecc4;
+  --info-subtle: #dfeaf3;
+  --success: #3f6037;
+  --danger: #a82b27;
+}
+
+@theme inline {
+  --font-sans: var(--font-stack-text), Arial, sans-serif;
+  --font-display: var(--font-stack-notch), Arial, sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-ring: var(--ring);
+  --color-surface: var(--surface);
+  --color-subtle: var(--subtle);
+  --color-secondary: var(--secondary);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-success-subtle: var(--success-subtle);
+  --color-info-subtle: var(--info-subtle);
+  --color-success: var(--success);
+  --color-danger: var(--danger);
+}
+
+@layer base {
+  body {
+    @apply bg-background font-sans font-normal text-foreground antialiased wrap-anywhere;
+  }
+  button,
+  a,
+  input,
+  textarea,
+  select {
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-4 outline-ring;
+  }
+  ::selection {
+    @apply bg-secondary text-foreground;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-display;
+  }
+  button,
+  a {
+    touch-action: manipulation;
+  }
+}
+
+@layer components {
+  .button-primary {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-foreground px-5 py-3 text-sm font-medium text-background transition-colors hover:bg-foreground/85 disabled:cursor-wait disabled:opacity-60;
+  }
+  .button-secondary {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-sm font-medium transition-colors hover:bg-subtle;
+  }
+  .field {
+    @apply w-full rounded-lg border border-border bg-surface px-3 py-3 text-base leading-relaxed outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/20;
+  }
+  .text-link {
+    @apply inline-flex min-h-10 items-center gap-2 text-sm font-medium underline-offset-4 hover:underline;
+  }
+}
+
+/* The clipped corner echoes Stack Sans Notch without clipping live text. */
+.notched-surface {
+  clip-path: polygon(
+    0 0,
+    calc(100% - 1.5rem) 0,
+    100% 1.5rem,
+    100% 100%,
+    0 100%
+  );
+}
+dialog::backdrop {
+  background: rgb(37 40 34 / 35%);
+  backdrop-filter: blur(4px);
+}
+dialog[open] {
+  animation: dialog-enter 160ms ease-out;
+}
+@keyframes dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
