@@ -22,7 +22,7 @@ Conference networking app. Next.js App Router, React, TypeScript, Tailwind CSS 4
 - NFC is an HTTPS URL entry point, not authentication. The QR code encodes the invitation URL; a public or otherwise phone-reachable URL is needed for a phone demo.
 - Keep credentials server-side in ignored `.env.local` or Kubernetes Secrets. Do not log profile content, invitation URLs, owner tokens, or credentials. Only explicit safe operation spans are exported by `lib/telemetry.ts`.
 - Read `docs/integrations.md` for service setup, deployment, and evidence requirements. Configured code is not proof of a live provider integration. Radar team is `salty`, cluster ID `2QK7T2SmT3o`, namespace `team-salty`; verify the name still matches and scope every operation to that cluster.
-- Do not push README changes without the user's explicit approval.
+- The root README was intentionally removed. Do not recreate or push a README without the user's explicit approval.
 - Verify desktop/mobile rendering and keyboard/dialog behavior after UI edits. Keep regression tests for nontrivial matching or persistence changes.
 
 <!-- BEGIN:nextjs-agent-rules -->

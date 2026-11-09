@@ -10,7 +10,6 @@ import {
 } from "react";
 import {
   ArrowBendDownRightIcon,
-  ArrowDownIcon,
   ArrowRightIcon,
   ArrowUpRightIcon,
   BookmarkSimpleIcon,
@@ -30,7 +29,6 @@ import {
   XIcon,
   BroadcastIcon,
   ChatCircleDotsIcon,
-  ArrowUUpLeftIcon,
 } from "@phosphor-icons/react";
 import {
   defaultProfile,
@@ -236,7 +234,7 @@ function Modal({
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
-      className="m-auto max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl bg-background p-0 text-foreground shadow-xl backdrop:bg-foreground/30"
+      className="m-auto max-h-[90dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-2xl bg-background p-0 text-foreground shadow-xl backdrop:bg-foreground/30"
     >
       {/* A dynamic viewport limit keeps the native dialog usable above mobile keyboards. */}
       <div className="p-6 sm:p-8">
@@ -371,51 +369,189 @@ function CircleDiagram({
   members,
   selfId,
 }: {
-  members: Person[];
-  selfId: string;
+  members?: Person[];
+  selfId?: string;
 }) {
-  return (
-    <div className="relative grid gap-5 sm:grid-cols-3 sm:gap-8">
-      {members.map((member, i) => {
+  const id = useId();
+  const connections = members
+    ? members.map((member, i) => {
         const next = members[(i + 1) % members.length];
-        return (
-          <div
-            key={member.id}
-            className="relative flex items-center gap-4 sm:block"
-          >
-            <div className="flex items-center gap-3 sm:mb-4">
-              <Avatar
-                initials={member.initials}
-                color={member.color}
-                size="large"
+        return {
+          name: member.id === selfId ? "You" : member.name,
+          initials: member.initials,
+          color: member.color,
+          offer: member.offer,
+          connection: `Helps ${next.id === selfId ? "you" : next.name} with ${helpTopics(member.offer, next.ask).join(", ")}`,
+        };
+      })
+    : [
+        {
+          name: "You bring something.",
+          initials: "01",
+          color: "sage" as const,
+          offer: "A skill, an idea, a fresh pair of eyes.",
+          connection: "You help the next person.",
+        },
+        {
+          name: "Someone needs it.",
+          initials: "02",
+          color: "lilac" as const,
+          offer: "They have something to offer, too.",
+          connection: "They help someone else.",
+        },
+        {
+          name: "It comes back around.",
+          initials: "03",
+          color: "peach" as const,
+          offer: "The third person has the help you need.",
+          connection: "They help you. The circle closes.",
+        },
+      ];
+  return (
+    <figure className="@container">
+      <div className="grid items-center gap-6 @xl:grid-cols-2">
+        <div
+          className="relative mx-auto aspect-square w-full max-w-96"
+          aria-hidden="true"
+        >
+          {/* Fixed SVG geometry keeps three equal, overlapping circles and their clockwise return path aligned at every size. */}
+          <svg viewBox="0 0 360 360" fill="none" className="size-full">
+            <defs>
+              <pattern
+                id={`${id}-hatch`}
+                width="7"
+                height="7"
+                patternUnits="userSpaceOnUse"
+                patternTransform="rotate(-35)"
+              >
+                <path d="M0 0V7" className="stroke-accent" strokeWidth="2" />
+              </pattern>
+              <clipPath id={`${id}-overlap`}>
+                <circle cx="135" cy="206" r="105" />
+              </clipPath>
+              <clipPath id={`${id}-center`}>
+                <circle cx="180" cy="128" r="105" />
+              </clipPath>
+              <marker
+                id={`${id}-arrow`}
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path
+                  d="m2 1 5 4-5 4"
+                  className="stroke-foreground"
+                  strokeWidth="1.5"
+                />
+              </marker>
+            </defs>
+            <circle
+              cx="180"
+              cy="180"
+              r="164"
+              className="stroke-border"
+              strokeDasharray="2 5"
+            />
+            <g className="stroke-muted-foreground/35">
+              <circle cx="180" cy="128" r="105" />
+              <circle cx="225" cy="206" r="105" />
+              <circle cx="135" cy="206" r="105" />
+            </g>
+            <g clipPath={`url(#${id}-center)`}>
+              <circle
+                cx="225"
+                cy="206"
+                r="105"
+                fill={`url(#${id}-hatch)`}
+                clipPath={`url(#${id}-overlap)`}
+                opacity="0.55"
               />
-              <span className="hidden flex-1 text-border sm:block">
-                <ArrowRightIcon size={30} weight="light" />
-              </span>
-            </div>
-            <div className="min-w-0">
-              <h3 className="text-lg font-medium">
-                {member.id === selfId ? "You" : member.name}
-              </h3>
-              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                {member.offer}
-              </p>
-              <p className="mt-3 flex items-start gap-1.5 text-xs font-medium">
-                <span className="mt-1 size-1.5 shrink-0 rounded-full bg-accent" />
-                Helps {next.id === selfId ? "you" : next.name.split(" ")[0]}{" "}
-                with {helpTopics(member.offer, next.ask).join(", ")}
-              </p>
-            </div>
-            {i < members.length - 1 && (
-              <ArrowDownIcon
-                className="absolute -bottom-5 left-7 text-border sm:hidden"
-                size={16}
-              />
-            )}
+            </g>
+            <g
+              className="stroke-foreground"
+              strokeWidth="1.5"
+              markerEnd={`url(#${id}-arrow)`}
+            >
+              <path d="M215 49A136 136 0 0 1 312 213" />
+              <path d="M275 278A136 136 0 0 1 85 278" />
+              <path d="M48 213A136 136 0 0 1 145 49" />
+            </g>
+            {connections.map((member, i) => (
+              <g
+                key={i}
+                transform={`translate(${[180, 298, 62][i]} ${[44, 248, 248][i]})`}
+              >
+                <circle r="29" className="fill-surface" />
+                <circle
+                  r="24"
+                  className={
+                    {
+                      sage: "fill-success-subtle",
+                      lilac: "fill-secondary",
+                      peach: "fill-accent-subtle",
+                      blue: "fill-info-subtle",
+                    }[member.color]
+                  }
+                />
+                <text
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  className="fill-foreground font-display text-base font-medium"
+                >
+                  {member.initials}
+                </text>
+                {members && (
+                  <text
+                    y="42"
+                    textAnchor="middle"
+                    className="fill-muted-foreground font-sans text-xs"
+                  >
+                    0{i + 1}
+                  </text>
+                )}
+              </g>
+            ))}
+          </svg>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <p className="rounded-full bg-surface px-3 py-2 text-center font-display text-base font-medium leading-tight @sm:text-xl">
+              A little give.
+              <br />A little get.
+            </p>
           </div>
-        );
-      })}
-    </div>
+        </div>
+        <ol className="space-y-6">
+          {connections.map((member, i) => (
+            <li key={i} className="flex items-start gap-3">
+              <span
+                className={`flex size-7 shrink-0 items-center justify-center rounded-full font-display text-xs tabular-nums ${colors[member.color]}`}
+                aria-hidden="true"
+              >
+                0{i + 1}
+              </span>
+              <div className="min-w-0">
+                <h3 className="text-lg font-medium leading-snug">
+                  {member.name}
+                </h3>
+                <p className="mt-1 text-pretty text-sm leading-relaxed text-muted-foreground">
+                  {member.offer}
+                </p>
+                <p className="mt-2 text-xs leading-relaxed">
+                  {member.connection}
+                </p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+      {!members && (
+        <figcaption className="mt-5 text-xs leading-relaxed text-muted-foreground">
+          An example of how a circle connects. No match yet.
+        </figcaption>
+      )}
+    </figure>
   );
 }
 
@@ -464,7 +600,7 @@ function PersonCard({
           {person.available ? "Open to a detour" : "Not available right now"}
         </span>
         <button
-          className="inline-flex min-h-9 items-center gap-1.5 text-sm font-medium hover:underline"
+          className="inline-flex min-h-11 items-center gap-1.5 text-sm font-medium hover:underline"
           onClick={onOpen}
         >
           Say hello
@@ -862,6 +998,9 @@ export default function DetourApp() {
     ? findDetours(self, candidates)
     : { circle: null, pairs: [] };
   const circle = matches.circle;
+  const hasFilters = Boolean(
+    query.trim() || availableOnly || topic !== "All people",
+  );
   const visiblePeople = connected
     ? query.trim() || availableOnly
       ? (searchPeople ?? [])
@@ -1085,7 +1224,7 @@ export default function DetourApp() {
           </nav>
           <button
             onClick={() => setOverlay({ type: "profile" })}
-            className="flex items-center gap-2.5 rounded-full text-sm"
+            className="flex min-h-11 min-w-11 items-center justify-center gap-2.5 rounded-full text-sm"
             aria-label="Edit your introduction"
           >
             <span className="hidden md:inline">
@@ -1156,7 +1295,7 @@ export default function DetourApp() {
                 <h1
                   ref={headingRef}
                   tabIndex={-1}
-                  className="max-w-3xl font-display text-5xl font-medium leading-none tracking-tight outline-none sm:text-6xl lg:text-7xl"
+                  className="max-w-3xl text-balance font-display text-5xl font-medium leading-none tracking-tight outline-none sm:text-6xl lg:text-7xl"
                 >
                   Good things happen
                   <br className="hidden sm:block" /> off the agenda.
@@ -1183,9 +1322,11 @@ export default function DetourApp() {
                       size={17}
                       className="text-accent"
                     />
-                    {preview
-                      ? "A sample detour, matched to your draft"
-                      : "A detour worth taking"}
+                    {circle
+                      ? preview
+                        ? "Sample circle · fictional attendees"
+                        : "Your suggested circle"
+                      : "How a circle works"}
                   </span>
                   <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <ClockIcon size={15} />
@@ -1202,7 +1343,7 @@ export default function DetourApp() {
                         A small circle. A big unlock.
                       </h2>
                       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                        You each have a missing piece. You just haven’t met yet.
+                        You help one person. Another helps you. Everyone brings something useful.
                       </p>
                     </div>
                     <UsersThreeIcon
@@ -1221,33 +1362,52 @@ export default function DetourApp() {
                           {connected && "Uses your published introduction."}
                         </p>
                         <button className="button-primary" onClick={openCircle}>
-                          Meet your circle
+                          View circle
                           <ArrowUpRightIcon size={18} />
                         </button>
                       </div>
                     </>
                   ) : (
-                    <div className="rounded-xl bg-subtle p-5">
-                      <h3 className="text-xl font-medium">
-                        {networkLoading
-                          ? "Finding your next detour…"
-                          : !network
-                            ? "The network isn’t ready yet."
-                            : connected && !self
-                              ? "Your circle starts with an introduction."
-                              : !self?.available
-                                ? "Take a detour when you’re ready."
-                                : "No complete circle just yet."}
-                      </h3>
-                      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                        {!network
-                          ? "Retry the network to discover people."
-                          : connected && !self
-                            ? "Add what you can offer and what you need, then publish your introduction to find people in the same connection mode."
-                            : !self?.available
-                              ? "Turn on your availability to see matching suggestions. Publish the update if your introduction is already live."
-                              : "A circle needs three people who can each help the next. Matching checks shared keywords in offers and asks."}
-                      </p>
+                    <div>
+                      <CircleDiagram />
+                      <div
+                        className="mt-6 border-t border-border pt-5"
+                        role="status"
+                      >
+                        <h3 className="text-xl font-medium">
+                          {networkLoading
+                            ? "Finding your next detour…"
+                            : !network
+                              ? "The network isn’t ready yet."
+                              : connected && !self
+                                ? "Your circle starts with an introduction."
+                                : !self?.available
+                                  ? "Take a detour when you’re ready."
+                                  : "Your next connection is still taking shape."}
+                        </h3>
+                        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                          {networkLoading
+                            ? "Checking the event network for people who can help one another."
+                            : !network
+                              ? "Retry the network to discover people."
+                              : connected && !self
+                                ? "Add what you can offer and what you need, then publish your introduction to find people in the same connection mode."
+                                : !self?.available
+                                  ? "Turn on your availability to see matching suggestions. Publish the update if your introduction is already live."
+                                  : "A circle needs three people who can each help the next. Matching checks shared keywords in offers and asks."}
+                        </p>
+                        {connected && !self && (
+                          <button
+                            className="text-link mt-2"
+                            onClick={() => setOverlay({ type: "profile" })}
+                          >
+                            {profile.name
+                              ? "Edit introduction"
+                              : "Create introduction"}
+                            <ArrowUpRightIcon size={16} />
+                          </button>
+                        )}
+                      </div>
                       {matches.pairs.length > 0 && self && (
                         <div className="mt-5 space-y-3">
                           <p className="text-sm font-medium">
@@ -1299,7 +1459,7 @@ export default function DetourApp() {
                     <button
                       onClick={() => setOverlay({ type: "profile" })}
                       aria-label="Edit your introduction"
-                      className="-mr-2 inline-flex size-10 shrink-0 items-center justify-center rounded-full hover:bg-background"
+                      className="-mr-2 inline-flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-background"
                     >
                       <PencilSimpleIcon size={18} />
                     </button>
@@ -1325,7 +1485,7 @@ export default function DetourApp() {
                     </div>
                   </div>
                   <div className="mt-5 flex items-center justify-between gap-3 border-t border-border pt-4">
-                    <label className="flex cursor-pointer items-center gap-2 text-xs">
+                    <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs">
                       <input
                         type="checkbox"
                         checked={profile.available}
@@ -1437,7 +1597,7 @@ export default function DetourApp() {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="Try Kubernetes, design, AI…"
-                    className="field py-3 pl-10 text-sm"
+                    className="field py-3 pl-10 text-base sm:text-sm"
                   />
                 </div>
               </div>
@@ -1453,7 +1613,7 @@ export default function DetourApp() {
                         key={item}
                         onClick={() => setTopic(item)}
                         aria-pressed={topic === item}
-                        className={`min-h-10 rounded-full border px-4 py-2 text-xs font-medium transition-colors ${topic === item ? "border-foreground bg-foreground text-background" : "border-border hover:border-muted-foreground"}`}
+                        className={`min-h-11 rounded-full border px-4 py-2 text-xs font-medium transition-colors ${topic === item ? "border-foreground bg-foreground text-background" : "border-border hover:border-muted-foreground"}`}
                       >
                         {item}
                       </button>
@@ -1468,7 +1628,7 @@ export default function DetourApp() {
                     </button>
                   )}
                 </div>
-                <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
                     checked={availableOnly}
@@ -1525,19 +1685,37 @@ export default function DetourApp() {
                     className="mx-auto mb-4"
                   />
                   <h3 className="text-2xl font-medium">
-                    A little further off the beaten path.
+                    {hasFilters
+                      ? "No introductions match these filters."
+                      : network.me
+                        ? "You’re the first one here."
+                        : "Make the first introduction."}
                   </h3>
                   <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-                    {query || availableOnly || topic !== "All people"
-                      ? "No one matches these filters yet. Try a broader skill or explore everyone here."
-                      : "No introductions are published yet. Publish yours to help the next person find you."}
+                    {hasFilters
+                      ? "Try another skill or clear your filters to see everyone."
+                      : network.me
+                        ? "Your introduction is live. Check back as more people join."
+                        : "Share what you can offer and what you need, so the next person can find you."}
                   </p>
                   <button
-                    onClick={clearFilters}
+                    onClick={
+                      hasFilters
+                        ? clearFilters
+                        : network.me
+                          ? () => setReload((value) => value + 1)
+                          : () => setOverlay({ type: "profile" })
+                    }
                     className="button-secondary mt-5"
                   >
-                    Clear filters
-                    <ArrowUUpLeftIcon size={17} />
+                    {hasFilters
+                      ? "Clear filters"
+                      : network.me
+                        ? "Refresh people"
+                        : profile.name
+                          ? "Edit introduction"
+                          : "Create introduction"}
+                    <ArrowRightIcon size={17} />
                   </button>
                 </div>
               )}
@@ -1786,7 +1964,7 @@ export default function DetourApp() {
           </p>
           <button
             onClick={() => setOverlay({ type: "about" })}
-            className="min-h-9 text-xs text-muted-foreground underline-offset-4 hover:underline"
+            className="min-h-11 text-xs text-muted-foreground underline-offset-4 hover:underline"
           >
             {preview
               ? "Sample people. Real possibilities."
@@ -1856,7 +2034,7 @@ export default function DetourApp() {
             <p className="text-xs text-muted-foreground">
               A good place to start
             </p>
-            <p className="mt-2 font-display text-xl leading-snug">
+            <p className="mt-2 text-pretty font-display text-xl leading-relaxed">
               “What’s the one thing you’d love to get unstuck today?”
             </p>
           </div>
@@ -2051,7 +2229,7 @@ export default function DetourApp() {
           </p>
           <div className={`rounded-xl p-5 ${colors[overlay.person.color]}`}>
             <p className="text-xs text-muted-foreground">Break the ice</p>
-            <p className="mt-2 font-display text-xl leading-snug">
+            <p className="mt-2 text-pretty font-display text-xl leading-relaxed">
               “I saw you’re looking for{" "}
               {overlay.person.ask.charAt(0).toLowerCase() +
                 overlay.person.ask.slice(1)}
