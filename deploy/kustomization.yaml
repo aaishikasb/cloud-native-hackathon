@@ -9,4 +9,4 @@ images:
   - name: app
     newName: ghcr.io/aaishikasb/cloud-native-hackathon
     # CI replaces this with a built commit's full SHA. Wait for that before enabling GitOps.
-    newTag: "41917a2e7ff0ddd3abe5dacc0d651abf7711d47b"
+    newTag: "bb32a057b280c64f411953d39754e705b8dd6ead"
