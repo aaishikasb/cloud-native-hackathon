@@ -374,12 +374,17 @@ test("invitations require unique published members, availability, and matching p
   const alice = await register("Alice");
   const bob = await register("Bob");
   assert.throws(
-    () => parseInvitation({ memberIds: [alice.id, alice.id] }, alice.id),
+    () =>
+      parseInvitation({ memberIds: [alice.id, alice.id] }, alice.id, "In person"),
     ApiError,
   );
   assert.throws(
     () =>
-      parseInvitation({ memberIds: [bob.id, "not-a-published-id"] }, alice.id),
+      parseInvitation(
+        { memberIds: [bob.id, "not-a-published-id"] },
+        alice.id,
+        "In person",
+      ),
     ApiError,
   );
   await publish(
@@ -416,6 +421,59 @@ test("invitations require unique published members, availability, and matching p
     ),
   );
   assert.equal(response.status, 409);
+});
+
+test("text-first invitations require an explicit plan while in-person locations remain optional", async (t) => {
+  const store = fakeElastic(t);
+  const alice = await register("Alice");
+  const bob = await register("Bob");
+  const memberIds = [alice.id, bob.id];
+  const inPerson = await create(
+    request("/api/invitations", "POST", { memberIds }, alice.cookie),
+  );
+  assert.equal(inPerson.status, 201);
+  assert.equal((await inPerson.json()).meetingSpot, "Coffee bar");
+
+  for (const [name, person] of [["Alice", alice], ["Bob", bob]] as const) {
+    const updated = await publish(
+      request(
+        "/api/profile",
+        "POST",
+        { ...defaultProfile, name, mode: "Text first" },
+        person.cookie,
+      ),
+    );
+    assert.equal(updated.status, 200);
+  }
+  for (const meetingSpot of [undefined, "", "   "]) {
+    const rejected = await create(
+      request(
+        "/api/invitations",
+        "POST",
+        { memberIds, meetingSpot },
+        alice.cookie,
+      ),
+    );
+    assert.equal(rejected.status, 400);
+    assert.match(
+      (await rejected.json()).error,
+      /shared text channel or messaging plan/,
+    );
+  }
+  assert.equal(store.indices.get("detour-invites")!.size, 1);
+
+  const created = await create(
+    request(
+      "/api/invitations",
+      "POST",
+      { memberIds, meetingSpot: "  Event Discord, #introductions channel  " },
+      alice.cookie,
+    ),
+  );
+  assert.equal(created.status, 201);
+  const invitation = await created.json();
+  assert.equal(invitation.mode, "Text first");
+  assert.equal(invitation.meetingSpot, "Event Discord, #introductions channel");
 });
 
 test("concurrent acceptance preserves both people and repeated acceptance is idempotent", async (t) => {

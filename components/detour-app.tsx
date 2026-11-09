@@ -1365,10 +1365,13 @@ export default function DetourApp({
       }
       setToast("Invitation created. Find it in My detours to share the link.");
     } catch (error) {
-      const message =
+      // A timed-out write can still have saved the invitation.
+      setInviteReload((value) => value + 1);
+      const reason =
         error instanceof Error
           ? error.message
           : "Couldn’t create this invitation.";
+      const message = `${reason} Check My detours before creating another.`;
       if (overlayRef.current === sourceOverlay) setActionError(message);
       else setToast(message);
     } finally {

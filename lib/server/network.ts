@@ -287,7 +287,11 @@ export async function withdrawProfile(request: Request) {
   }
 }
 
-export function parseInvitation(value: unknown, selfId: string) {
+export function parseInvitation(
+  value: unknown,
+  selfId: string,
+  mode: Profile["mode"],
+) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new ApiError(400, "Choose the people for this detour.");
   const input = value as Record<string, unknown>;
@@ -308,7 +312,9 @@ export function parseInvitation(value: unknown, selfId: string) {
     );
   }
   const meetingSpot =
-    input.meetingSpot === undefined ? "Coffee bar" : input.meetingSpot;
+    input.meetingSpot === undefined && mode === "In person"
+      ? "Coffee bar"
+      : input.meetingSpot;
   if (
     typeof meetingSpot !== "string" ||
     !meetingSpot.trim() ||
@@ -316,7 +322,9 @@ export function parseInvitation(value: unknown, selfId: string) {
   )
     throw new ApiError(
       400,
-      "Choose a meeting spot using 120 characters or fewer.",
+      mode === "Text first"
+        ? "Add a shared text channel or messaging plan using 120 characters or fewer."
+        : "Choose a meeting spot using 120 characters or fewer.",
     );
   return { memberIds: ids as string[], meetingSpot: meetingSpot.trim() };
 }
@@ -413,7 +421,11 @@ export async function createInvitation(
   const eventId = eventFromRequest(request);
   await ensureIndices();
   const me = await requirePerson(request, eventId);
-  const { memberIds, meetingSpot } = parseInvitation(value, me._id);
+  const { memberIds, meetingSpot } = parseInvitation(
+    value,
+    me._id,
+    me._source.mode,
+  );
   const members = await membersFor(memberIds, eventId);
   assertAvailable(members, me._source.mode);
   const id = randomUUID();

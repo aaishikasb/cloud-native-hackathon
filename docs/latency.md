@@ -27,6 +27,14 @@ The script permits only index-existence HEADs and search reads, and blocks index
 
 Focused regressions cover simultaneous initialization, cache expiry, event-field mappings on new indices, failed initialization retry, changed credentials, real readiness queries, missing-index recovery, and ordinary missing documents.
 
+## Write deadline follow-up
+
+During the local rendered check, creating a Text first invitation returned HTTP 503. A narrowly scoped Elastic CLI read then found exactly one committed invitation for that temporary host/member pair, created at **23:04:05.898 UTC**, with its meeting plan present. The write had succeeded despite the unsuccessful response. Other observed local write flows took roughly 13–16 seconds overall; those request totals include multiple Elasticsearch operations.
+
+Elasticsearch PUT and DELETE requests now have a **30-second** deadline so `refresh=wait_for` has more time to complete. Document reads, HEAD checks, and search POSTs retain their **10-second** deadline. Write visibility and optimistic concurrency are preserved. A focused regression asserts these separate deadlines. The UI refreshes invitations after a failed create and asks the attendee to check My detours before creating another; it does not automatically retry the write.
+
+A longer deadline cannot guarantee an unambiguous result: a write can still commit before a later timeout or network failure. The recovered invitation was reused for verification instead of creating a duplicate. This observation supports the deadline change, not a claim that all serverless write latency has been eliminated.
+
 ## Event mapping prerequisite
 
 New indices include an `eventId` keyword on both people and invitations. Existing strict indices require this additive migration **before deploying event-aware writes**; request-time initialization deliberately does not modify existing mappings:

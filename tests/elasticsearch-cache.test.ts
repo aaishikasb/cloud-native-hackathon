@@ -113,3 +113,18 @@ test("a missing optional document remains missing without discarding successful 
   await ensureIndices();
   assert.equal(store.calls.length, 2);
 });
+
+test("writes allow refresh time while search and document reads keep their shorter deadline", async (t) => {
+  fakeIndices(t);
+  const deadlines: number[] = [];
+  t.mock.method(AbortSignal, "timeout", (milliseconds: number) => {
+    deadlines.push(milliseconds);
+    return new AbortController().signal;
+  });
+  t.mock.method(globalThis, "fetch", async () => Response.json({}));
+  await elastic("detour-invites/_doc/test?refresh=wait_for&if_seq_no=1&if_primary_term=1", "PUT", {});
+  await elastic("detour-people/_doc/test?refresh=wait_for", "DELETE");
+  await elastic("detour-people/_search", "POST", { size: 0 });
+  await elastic("detour-invites/_doc/test");
+  assert.deepEqual(deadlines, [30_000, 30_000, 10_000, 10_000]);
+});

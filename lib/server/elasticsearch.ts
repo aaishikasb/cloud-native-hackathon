@@ -80,7 +80,8 @@ export async function elastic<T>(
         body: body === undefined ? undefined : JSON.stringify(body),
         cache: "no-store",
         redirect: "error",
-        signal: AbortSignal.timeout(10_000),
+        // A refresh wait can outlast a read deadline after the write has already committed.
+        signal: AbortSignal.timeout(method === "PUT" || method === "DELETE" ? 30_000 : 10_000),
       }).catch((error: unknown) => {
         if (indexInitialization?.url === url && indexInitialization.key === key)
           indexInitialization.expiresAt = 0;
