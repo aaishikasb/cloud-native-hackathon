@@ -262,10 +262,12 @@ function ProfileEditor({
   profile,
   onSave,
   onClose,
+  onEdit,
 }: {
   profile: Profile;
   onSave: (profile: Profile) => void;
   onClose: () => void;
+  onEdit: () => void;
 }) {
   const [draft, setDraft] = useState(profile);
   const [error, setError] = useState<string | null>(null);
@@ -289,7 +291,12 @@ function ProfileEditor({
         A little context makes a much better introduction. You don’t have to be
         an expert to be helpful.
       </p>
-      <form onSubmit={submit} noValidate className="space-y-5">
+      <form
+        onSubmit={submit}
+        onChange={onEdit}
+        noValidate
+        className="space-y-5"
+      >
         <label className="block text-sm font-medium">
           Your name
           <input
@@ -631,7 +638,8 @@ export default function DetourApp() {
   const [view, setView] = useState<View>("discover");
   const [profile, setProfile] = useState<Profile>(defaultProfile);
   const [saved, setSaved] = useState<string[]>([]);
-  const [overlay, setOverlay] = useState<Overlay>(null);
+  const [overlay, setOverlayState] = useState<Overlay>(null);
+  const overlayRef = useRef<Overlay>(null);
   const [query, setQuery] = useState("");
   const [topic, setTopic] = useState<Topic>("All people");
   const [availableOnly, setAvailableOnly] = useState(false);
@@ -649,7 +657,7 @@ export default function DetourApp() {
   const [invitationsError, setInvitationsError] = useState("");
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [inviteReload, setInviteReload] = useState(0);
-  const [activeInvitation, setActiveInvitation] = useState<Invitation | null>(
+  const [invitationDetail, setActiveInvitation] = useState<Invitation | null>(
     null,
   );
   const [invitationError, setInvitationError] = useState("");
@@ -662,6 +670,14 @@ export default function DetourApp() {
   const connected = network?.mode === "connected";
   const preview = network?.mode === "preview";
   const invitationId = overlay?.type === "invitation" ? overlay.id : null;
+  const activeInvitation =
+    invitationDetail?.id === invitationId ? invitationDetail : null;
+
+  function setOverlay(next: Overlay) {
+    // Track navigation synchronously so delayed mutations cannot replace a newer dialog.
+    overlayRef.current = next;
+    setOverlayState(next);
+  }
 
   useEffect(() => {
     try {
@@ -973,6 +989,7 @@ export default function DetourApp() {
     }
   }
   async function createInvite(members: Person[]) {
+    const sourceOverlay = overlayRef.current;
     setBusy(true);
     setActionError("");
     try {
@@ -986,21 +1003,24 @@ export default function DetourApp() {
               : "Coffee bar",
         }),
       });
-      setActiveInvitation(invitation);
       setInvitations((current) => [
         invitation,
         ...current.filter((item) => item.id !== invitation.id),
       ]);
-      setShareId(invitation.id);
       setInviteReload((value) => value + 1);
-      setOverlay({ type: "invitation", id: invitation.id });
-      setToast("Invitation created. Share the link with your invited people.");
+      if (overlayRef.current === sourceOverlay) {
+        setActiveInvitation(invitation);
+        setShareId(invitation.id);
+        setOverlay({ type: "invitation", id: invitation.id });
+      }
+      setToast("Invitation created. Find it in My detours to share the link.");
     } catch (error) {
-      setActionError(
+      const message =
         error instanceof Error
           ? error.message
-          : "Couldn’t create this invitation.",
-      );
+          : "Couldn’t create this invitation.";
+      if (overlayRef.current === sourceOverlay) setActionError(message);
+      else setToast(message);
     } finally {
       setBusy(false);
     }
@@ -1013,17 +1033,27 @@ export default function DetourApp() {
         `/api/invitations/${encodeURIComponent(id)}/accept`,
         { method: "POST", body: "{}" },
       );
-      setActiveInvitation(invitation);
+      if (
+        overlayRef.current?.type === "invitation" &&
+        overlayRef.current.id === id
+      )
+        setActiveInvitation(invitation);
       setInvitations((current) =>
         current.map((item) => (item.id === id ? invitation : item)),
       );
-      setToast("You’ve accepted this detour.");
+      setInviteReload((value) => value + 1);
+      setToast("Invitation accepted. Find it in My detours.");
     } catch (error) {
-      setActionError(
+      const message =
         error instanceof Error
           ? error.message
-          : "Couldn’t accept this invitation.",
-      );
+          : "Couldn’t accept this invitation.";
+      if (
+        overlayRef.current?.type === "invitation" &&
+        overlayRef.current.id === id
+      )
+        setActionError(message);
+      else setToast(message);
     } finally {
       setBusy(false);
     }
@@ -1323,12 +1353,13 @@ export default function DetourApp() {
                       <input
                         type="checkbox"
                         checked={profile.available}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          hasDraft.current = true;
                           setProfile({
                             ...profile,
                             available: e.target.checked,
-                          })
-                        }
+                          });
+                        }}
                         className="size-4 accent-success"
                       />
                       Open to a detour
@@ -1800,7 +1831,11 @@ export default function DetourApp() {
         <ProfileEditor
           profile={profile}
           onClose={() => setOverlay(null)}
+          onEdit={() => {
+            hasDraft.current = true;
+          }}
           onSave={(next) => {
+            hasDraft.current = true;
             setProfile(next);
             setOverlay(null);
             setToast("Your draft is saved on this device.");

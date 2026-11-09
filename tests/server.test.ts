@@ -62,6 +62,7 @@ function fakeElastic(t: TestContext) {
     _primary_term: number;
   };
   const indices = new Map<string, Map<string, Stored>>();
+  const failedMembers = new Set<string>();
   let conflicts = 0;
   const calls: { path: string; body: Record<string, unknown> | undefined }[] =
     [];
@@ -109,6 +110,12 @@ function fakeElastic(t: TestContext) {
               (hit) => Date.parse(String(hit._source.expiresAt)) > Date.now(),
             );
         }
+        if (body.sort?.[0]?.createdAt === "desc")
+          hits.sort((a, b) =>
+            String(b._source.createdAt).localeCompare(
+              String(a._source.createdAt),
+            ),
+          );
         return json({ hits: { hits: hits.slice(0, body.size ?? 10) } });
       }
       if (action === "_mget") {
@@ -119,9 +126,11 @@ function fakeElastic(t: TestContext) {
         );
         return json({
           docs: body.ids.map((key: string) =>
-            docs.has(key)
-              ? { _id: key, ...docs.get(key), found: true }
-              : { _id: key, found: false },
+            failedMembers.has(key)
+              ? { _id: key, error: { reason: "private shard diagnostic" } }
+              : docs.has(key)
+                ? { _id: key, ...docs.get(key), found: true }
+                : { _id: key, found: false },
           ),
         });
       }
@@ -160,6 +169,7 @@ function fakeElastic(t: TestContext) {
   );
   return {
     indices,
+    failedMembers,
     calls,
     get conflicts() {
       return conflicts;
@@ -431,6 +441,92 @@ test("concurrent acceptance preserves both people and repeated acceptance is ide
     request("/api/invitations", "GET", undefined, cara.cookie),
   );
   assert.equal((await mine.json()).invitations.length, 1);
+});
+
+test("invitation lists fetch unique members once while preserving order, withdrawal, expiry, and privacy", async (t) => {
+  const store = fakeElastic(t);
+  const alice = await register("Alice"),
+    bob = await register("Bob"),
+    cara = await register("Cara"),
+    dan = await register("Dan");
+  const memberGroups = [
+    [alice.id, bob.id],
+    [cara.id, alice.id],
+    [bob.id, cara.id, alice.id],
+    [alice.id, bob.id],
+    [alice.id, dan.id],
+  ];
+  const ids: string[] = [];
+  for (const [index, memberIds] of memberGroups.entries()) {
+    const response = await create(
+      request("/api/invitations", "POST", { memberIds }, alice.cookie),
+    );
+    assert.equal(response.status, 201);
+    const invitation = await response.json();
+    ids.push(invitation.id);
+    store.indices.get("detour-invites")!.get(invitation.id)!._source.createdAt =
+      new Date(index * 1000).toISOString();
+  }
+  store.indices.get("detour-invites")!.get(ids[3])!._source.expiresAt =
+    new Date(0).toISOString();
+  await withdraw(request("/api/profile", "DELETE", undefined, dan.cookie));
+  store.calls.length = 0;
+  const response = await list(
+    request("/api/invitations", "GET", undefined, alice.cookie),
+  );
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.deepEqual(
+    data.invitations.map((item: { id: string }) => item.id),
+    [ids[2], ids[1], ids[0]],
+  );
+  assert.deepEqual(
+    data.invitations.map((item: { members: { id: string }[] }) =>
+      item.members.map((member) => member.id),
+    ),
+    memberGroups.slice(0, 3).reverse(),
+  );
+  assert.ok(
+    data.invitations.every(
+      (item: { viewerId: string }) => item.viewerId === alice.id,
+    ),
+  );
+  assert.doesNotMatch(JSON.stringify(data), /ownerHash|detour_guest|test-only/);
+  const memberRequests = store.calls.filter((call) =>
+    call.path.endsWith("/_mget"),
+  );
+  assert.equal(memberRequests.length, 1);
+  const requestedIds = memberRequests[0].body!.ids as string[];
+  assert.equal(requestedIds.length, 4);
+  assert.deepEqual(
+    new Set(requestedIds),
+    new Set([alice.id, bob.id, cara.id, dan.id]),
+  );
+
+  store.failedMembers.add(bob.id);
+  const partialFailure = await list(
+    request("/api/invitations", "GET", undefined, alice.cookie),
+  );
+  assert.equal(partialFailure.status, 503);
+  assert.doesNotMatch(
+    await partialFailure.text(),
+    /private shard diagnostic|ownerHash|test-only/,
+  );
+  const singleFailure = await invitation(
+    request(`/api/invitations/${ids[0]}`),
+    context(ids[0]),
+  );
+  assert.equal(singleFailure.status, 503);
+  store.indices.get("detour-invites")!.clear();
+  store.calls.length = 0;
+  const empty = await list(
+    request("/api/invitations", "GET", undefined, alice.cookie),
+  );
+  assert.deepEqual(await empty.json(), { invitations: [] });
+  assert.equal(
+    store.calls.filter((call) => call.path.endsWith("/_mget")).length,
+    0,
+  );
 });
 
 test("uninvited browsers cannot accept; expiry and withdrawn profiles invalidate invitations", async (t) => {

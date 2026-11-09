@@ -275,7 +275,7 @@ export function parseInvitation(value: unknown, selfId: string) {
   return { memberIds: ids as string[], meetingSpot: meetingSpot.trim() };
 }
 
-async function membersFor(ids: string[]): Promise<PublicPerson[]> {
+async function loadMembers(ids: string[]): Promise<Map<string, PublicPerson>> {
   const result = await elastic<{
     docs: (ElasticDocument<PersonDocument> & { error?: unknown })[];
   }>(`${PEOPLE_INDEX}/_mget?_source=${publicFields.join(",")}`, "POST", {
@@ -286,12 +286,24 @@ async function membersFor(ids: string[]): Promise<PublicPerson[]> {
       503,
       "The attendee network is temporarily unavailable. Try again shortly.",
     );
-  if (result!.docs.some((doc) => !doc.found))
+  return new Map(
+    result!.docs
+      .filter((doc) => doc.found)
+      .map((doc) => [doc._id, publicPerson(doc._id, doc._source)]),
+  );
+}
+
+function orderedMembers(ids: string[], available: Map<string, PublicPerson>) {
+  if (ids.some((id) => !available.has(id)))
     throw new ApiError(
       410,
       "Someone has withdrawn their introduction. Create a new detour with available people.",
     );
-  return result!.docs.map((doc) => publicPerson(doc._id, doc._source));
+  return ids.map((id) => available.get(id)!);
+}
+
+async function membersFor(ids: string[]): Promise<PublicPerson[]> {
+  return orderedMembers(ids, await loadMembers(ids));
 }
 
 function assertAvailable(members: PublicPerson[], mode: Profile["mode"]) {
@@ -322,11 +334,14 @@ async function invitationView(
   id: string,
   document: InvitationDocument,
   viewerId: string | null,
+  members?: Map<string, PublicPerson>,
 ): Promise<Invitation> {
   assertOpen(document);
   return {
     id,
-    members: await membersFor(document.memberIds),
+    members: members
+      ? orderedMembers(document.memberIds, members)
+      : await membersFor(document.memberIds),
     acceptedIds: document.acceptedIds,
     expiresAt: document.expiresAt,
     meetingSpot: document.meetingSpot,
@@ -417,10 +432,24 @@ export async function listInvitations(request: Request): Promise<Invitation[]> {
       },
     },
   );
+  const active = result!.hits.hits.filter((hit) => {
+    try {
+      assertOpen(hit._source);
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 410) return false;
+      throw error;
+    }
+  });
+  if (!active.length) return [];
+  const memberIds = [
+    ...new Set(active.flatMap((hit) => hit._source.memberIds)),
+  ];
+  const members = await loadMembers(memberIds);
   const invitations = await Promise.all(
-    result!.hits.hits.map(async (hit) => {
+    active.map(async (hit) => {
       try {
-        return await invitationView(hit._id, hit._source, me._id);
+        return await invitationView(hit._id, hit._source, me._id, members);
       } catch (error) {
         if (error instanceof ApiError && error.status === 410) return null;
         throw error;
