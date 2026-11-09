@@ -42,6 +42,7 @@ import {
   type Topic,
 } from "@/lib/detour";
 import { findDetours, helpTopics } from "@/lib/matching";
+import { parseBrowserState, serializeBrowserState } from "@/lib/browser-state";
 import type { Invitation } from "@/lib/server/network";
 
 type View = "discover" | "detours" | "card";
@@ -262,12 +263,10 @@ function ProfileEditor({
   profile,
   onSave,
   onClose,
-  onEdit,
 }: {
   profile: Profile;
   onSave: (profile: Profile) => void;
   onClose: () => void;
-  onEdit: () => void;
 }) {
   const [draft, setDraft] = useState(profile);
   const [error, setError] = useState<string | null>(null);
@@ -291,12 +290,7 @@ function ProfileEditor({
         A little context makes a much better introduction. You don’t have to be
         an expert to be helpful.
       </p>
-      <form
-        onSubmit={submit}
-        onChange={onEdit}
-        noValidate
-        className="space-y-5"
-      >
+      <form onSubmit={submit} noValidate className="space-y-5">
         <label className="block text-sm font-medium">
           Your name
           <input
@@ -636,7 +630,9 @@ function ShareCard({
 
 export default function DetourApp() {
   const [view, setView] = useState<View>("discover");
-  const [profile, setProfile] = useState<Profile>(defaultProfile);
+  // A displayed sample is not a draft until explicitly saved or replaced by a published profile.
+  const [draft, setProfile] = useState<Profile | null>(null);
+  const profile = draft ?? defaultProfile;
   const [saved, setSaved] = useState<string[]>([]);
   const [overlay, setOverlayState] = useState<Overlay>(null);
   const overlayRef = useRef<Overlay>(null);
@@ -681,32 +677,12 @@ export default function DetourApp() {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const stored = JSON.parse(raw);
-        const p = stored.profile;
-        if (
-          p &&
-          typeof p.name === "string" &&
-          typeof p.offer === "string" &&
-          typeof p.ask === "string" &&
-          typeof p.available === "boolean" &&
-          ["In person", "Text first"].includes(p.mode) &&
-          !validateProfile(p)
-        ) {
-          setProfile(p);
-          hasDraft.current = true;
-        }
-        if (Array.isArray(stored.saved))
-          setSaved([
-            ...new Set<string>(
-              stored.saved.filter(
-                (id: unknown): id is string =>
-                  typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id),
-              ),
-            ),
-          ]);
+      const stored = parseBrowserState(localStorage.getItem(storageKey));
+      if (stored.profile) {
+        setProfile(stored.profile);
+        hasDraft.current = true;
       }
+      setSaved(stored.saved);
     } catch {
       setStorageError(true);
     }
@@ -725,11 +701,11 @@ export default function DetourApp() {
   useEffect(() => {
     if (!ready) return;
     try {
-      localStorage.setItem(storageKey, JSON.stringify({ profile, saved }));
+      localStorage.setItem(storageKey, serializeBrowserState(draft, saved));
     } catch {
       setStorageError(true);
     }
-  }, [profile, saved, ready]);
+  }, [draft, saved, ready]);
 
   useEffect(() => {
     if (!ready) return;
@@ -1831,9 +1807,6 @@ export default function DetourApp() {
         <ProfileEditor
           profile={profile}
           onClose={() => setOverlay(null)}
-          onEdit={() => {
-            hasDraft.current = true;
-          }}
           onSave={(next) => {
             hasDraft.current = true;
             setProfile(next);

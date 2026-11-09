@@ -118,6 +118,7 @@ const mappings = {
 };
 
 export async function ensureIndices() {
+  // Recheck so externally removed indices can recover without restarting the app.
   await Promise.all(
     Object.entries(mappings).map(async ([index, mapping]) => {
       if (await elastic(index, "HEAD", undefined, true)) return;
