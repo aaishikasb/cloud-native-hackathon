@@ -1,0 +1,15 @@
+node_modules
+.next
+.git
+.env*
+.data
+.codex
+.agents
+.aws
+*.tsbuildinfo
+docs
+tests
+.github
+.gitar
+deploy
+argocd

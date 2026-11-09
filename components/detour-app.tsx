@@ -41,12 +41,15 @@ import {
   type Profile,
   type Topic,
 } from "@/lib/detour";
+import { findDetours, helpTopics } from "@/lib/matching";
+import type { Invitation } from "@/lib/server/network";
 
 type View = "discover" | "detours" | "card";
 type Overlay =
   | { type: "profile" }
-  | { type: "circle" }
-  | { type: "person"; person: Person }
+  | { type: "circle"; members: Person[]; preview: boolean }
+  | { type: "invitation"; id: string }
+  | { type: "person"; person: Person & { mode?: Profile["mode"] } }
   | { type: "about" }
   | null;
 const topics: Topic[] = [
@@ -63,6 +66,43 @@ const colors = {
   blue: "bg-info-subtle",
 };
 const storageKey = "detour-preview-v1";
+type Network = {
+  mode: "preview" | "connected";
+  people: (Person & { mode?: Profile["mode"] })[];
+  me: { id: string; profile: Profile } | null;
+};
+
+function personFromProfile(profile: Profile, id = "you"): Person {
+  return {
+    ...profile,
+    id,
+    initials: profile.name.slice(0, 2).toUpperCase(),
+    role: "Conference attendee",
+    color: "sage",
+    topic: "All people",
+    location: profile.mode === "Text first" ? "Text first" : "Coffee bar",
+  };
+}
+
+async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    cache: "no-store",
+    headers: { "Content-Type": "application/json", ...init.headers },
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new Error(
+      typeof data?.error === "string"
+        ? data.error
+        : "The network couldn’t complete that request. Please try again.",
+    );
+  if (data === null)
+    throw new Error(
+      "The network returned an unreadable response. Please try again.",
+    );
+  return data as T;
+}
 
 function Logo({ small = false }: { small?: boolean }) {
   return (
@@ -319,72 +359,61 @@ function ProfileEditor({
           <CheckIcon size={18} />
         </button>
         <p className="text-center text-xs leading-relaxed text-muted-foreground">
-          This preview saves your introduction on this device.
+          Your draft stays on this device until you publish it.
         </p>
       </form>
     </Modal>
   );
 }
 
-function CircleDiagram({ profile }: { profile: Profile }) {
-  const members = [
-    {
-      name: "You",
-      initials: profile.name.slice(0, 2).toUpperCase(),
-      color: "sage" as const,
-      offer: profile.offer,
-      to: "You can help Cara",
-    },
-    {
-      name: "Cara",
-      initials: "CN",
-      color: "peach" as const,
-      offer: "Accessibility & a fresh perspective",
-      to: "Cara can help Ben",
-    },
-    {
-      name: "Ben",
-      initials: "BC",
-      color: "lilac" as const,
-      offer: "Getting things onto Kubernetes",
-      to: "Ben can help you",
-    },
-  ];
+function CircleDiagram({
+  members,
+  selfId,
+}: {
+  members: Person[];
+  selfId: string;
+}) {
   return (
     <div className="relative grid gap-5 sm:grid-cols-3 sm:gap-8">
-      {members.map((member, i) => (
-        <div
-          key={member.name}
-          className="relative flex items-center gap-4 sm:block"
-        >
-          <div className="flex items-center gap-3 sm:mb-4">
-            <Avatar
-              initials={member.initials}
-              color={member.color}
-              size="large"
-            />
-            <span className="hidden flex-1 text-border sm:block">
-              <ArrowRightIcon size={30} weight="light" />
-            </span>
+      {members.map((member, i) => {
+        const next = members[(i + 1) % members.length];
+        return (
+          <div
+            key={member.id}
+            className="relative flex items-center gap-4 sm:block"
+          >
+            <div className="flex items-center gap-3 sm:mb-4">
+              <Avatar
+                initials={member.initials}
+                color={member.color}
+                size="large"
+              />
+              <span className="hidden flex-1 text-border sm:block">
+                <ArrowRightIcon size={30} weight="light" />
+              </span>
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-lg font-medium">
+                {member.id === selfId ? "You" : member.name}
+              </h3>
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                {member.offer}
+              </p>
+              <p className="mt-3 flex items-start gap-1.5 text-xs font-medium">
+                <span className="mt-1 size-1.5 shrink-0 rounded-full bg-accent" />
+                Helps {next.id === selfId ? "you" : next.name.split(" ")[0]}{" "}
+                with {helpTopics(member.offer, next.ask).join(", ")}
+              </p>
+            </div>
+            {i < members.length - 1 && (
+              <ArrowDownIcon
+                className="absolute -bottom-5 left-7 text-border sm:hidden"
+                size={16}
+              />
+            )}
           </div>
-          <div className="min-w-0">
-            <h3 className="text-lg font-medium">{member.name}</h3>
-            <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-              {member.offer}
-            </p>
-            <p className="mt-3 flex items-center gap-1.5 text-xs font-medium">
-              <span className="size-1.5 rounded-full bg-accent" />
-              {member.to}
-            </p>
-          </div>
-          {i < 2 && (
-            <ArrowDownIcon
-              className="absolute -bottom-5 left-7 text-border sm:hidden"
-              size={16}
-            />
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -431,7 +460,7 @@ function PersonCard({
           <span
             className={`size-1.5 rounded-full ${person.available ? "bg-success" : "bg-muted-foreground"}`}
           />
-          {person.available ? "Open to a detour" : "Back after the workshop"}
+          {person.available ? "Open to a detour" : "Not available right now"}
         </span>
         <button
           className="inline-flex min-h-9 items-center gap-1.5 text-sm font-medium hover:underline"
@@ -448,16 +477,27 @@ function PersonCard({
 function ShareCard({
   profile,
   notify,
+  invitationId,
+  preview,
+  onDiscover,
 }: {
   profile: Profile;
   notify: (message: string) => void;
+  invitationId: string | null;
+  preview: boolean;
+  onDiscover: () => void;
 }) {
   const [link, setLink] = useState("");
   const [qr, setQr] = useState("");
   const [error, setError] = useState(false);
   useEffect(() => {
     let active = true;
-    const url = `${window.location.origin}/?invite=circle`;
+    setQr("");
+    setError(false);
+    setLink("");
+    const id = preview ? "circle" : invitationId;
+    if (!id) return;
+    const url = `${window.location.origin}/?invite=${encodeURIComponent(id)}`;
     setLink(url);
     import("qrcode")
       .then((module) =>
@@ -476,7 +516,7 @@ function ShareCard({
     return () => {
       active = false;
     };
-  }, []);
+  }, [invitationId, preview]);
   async function copy() {
     try {
       await navigator.clipboard.writeText(link);
@@ -500,22 +540,30 @@ function ShareCard({
         <div className="my-8 h-px bg-foreground/25" />
         <div className="flex flex-wrap items-end justify-between gap-6">
           <div>
-            <p className="font-display text-2xl font-medium">{profile.name}</p>
+            <p className="font-display text-2xl font-medium">
+              {profile.name || "Your next detour"}
+            </p>
             <p className="mt-1 text-sm">Let’s take a detour.</p>
           </div>
           <div className="flex size-32 items-center justify-center rounded-lg bg-surface">
             {qr ? (
               <img
                 src={qr}
-                alt="Scan to open the sample circle invitation"
+                alt={
+                  preview
+                    ? "Scan to explore a sample circle"
+                    : "Scan to open this detour invitation"
+                }
                 width={120}
                 height={120}
               />
             ) : (
               <p className="p-3 text-center text-xs" role="status">
-                {error
-                  ? "Use the invitation link instead."
-                  : "Making your QR code…"}
+                {!preview && !invitationId
+                  ? "Create a detour to get your QR code."
+                  : error
+                    ? "Use the invitation link instead."
+                    : "Making your QR code…"}
               </p>
             )}
           </div>
@@ -531,26 +579,48 @@ function ShareCard({
           start with a hello.
         </h2>
         <p className="mt-4 max-w-md leading-relaxed text-muted-foreground">
-          Show your QR code or put the invitation link on your NFC card. A tap
-          opens the sample circle, ready to explore.
+          {preview
+            ? "Try a sample invitation by showing this QR code or putting its link on your NFC card."
+            : invitationId
+              ? "Share this detour with the people you invited. A tap opens the invitation; each person accepts from their own browser."
+              : "Create an invitation with someone you’d like to meet. Then put its link on your NFC card or share the QR code."}
         </p>
-        <label className="mt-8 block text-sm font-medium" htmlFor="share-link">
-          Your invitation link
-        </label>
-        <input
-          id="share-link"
-          readOnly
-          value={link}
-          onFocus={(e) => e.target.select()}
-          className="field mt-2"
-        />
-        <button onClick={copy} disabled={!link} className="button-primary mt-4">
-          <CopyIcon size={18} />
-          Copy invitation link
-        </button>
+        {preview || invitationId ? (
+          <>
+            <label
+              className="mt-8 block text-sm font-medium"
+              htmlFor="share-link"
+            >
+              {preview
+                ? "Sample invitation link"
+                : "This detour’s invitation link"}
+            </label>
+            <input
+              id="share-link"
+              readOnly
+              value={link}
+              onFocus={(e) => e.target.select()}
+              className="field mt-2"
+            />
+            <button
+              onClick={copy}
+              disabled={!link}
+              className="button-primary mt-4"
+            >
+              <CopyIcon size={18} />
+              Copy invitation link
+            </button>
+          </>
+        ) : (
+          <button onClick={onDiscover} className="button-primary mt-6">
+            Find a detour
+            <ArrowRightIcon size={18} />
+          </button>
+        )}
         <p className="mt-6 max-w-md text-sm leading-relaxed text-muted-foreground">
-          This is a demo invitation, not a personal contact card. For a phone to
-          open it, Detour needs to be hosted at a URL your phone can reach.
+          {preview
+            ? "Sample people, not a live invitation. A phone needs a hosted URL it can reach; localhost only opens on this computer."
+            : "Invitations expire after 24 hours. Use the browser where you published your introduction. The card opens the invitation; it does not verify your identity."}
         </p>
       </div>
     </div>
@@ -568,8 +638,30 @@ export default function DetourApp() {
   const [toast, setToast] = useState("");
   const [ready, setReady] = useState(false);
   const [storageError, setStorageError] = useState(false);
+  const [network, setNetwork] = useState<Network | null>(null);
+  const [networkError, setNetworkError] = useState("");
+  const [networkLoading, setNetworkLoading] = useState(true);
+  const [reload, setReload] = useState(0);
+  const [searchPeople, setSearchPeople] = useState<Person[] | null>(null);
+  const [searchError, setSearchError] = useState("");
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [invitationsError, setInvitationsError] = useState("");
+  const [invitationsLoading, setInvitationsLoading] = useState(false);
+  const [inviteReload, setInviteReload] = useState(0);
+  const [activeInvitation, setActiveInvitation] = useState<Invitation | null>(
+    null,
+  );
+  const [invitationError, setInvitationError] = useState("");
+  const [shareId, setShareId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const hasDraft = useRef(false);
+  const connected = network?.mode === "connected";
+  const preview = network?.mode === "preview";
+  const invitationId = overlay?.type === "invitation" ? overlay.id : null;
 
   useEffect(() => {
     try {
@@ -585,16 +677,16 @@ export default function DetourApp() {
           typeof p.available === "boolean" &&
           ["In person", "Text first"].includes(p.mode) &&
           !validateProfile(p)
-        )
+        ) {
           setProfile(p);
+          hasDraft.current = true;
+        }
         if (Array.isArray(stored.saved))
           setSaved([
             ...new Set<string>(
               stored.saved.filter(
                 (id: unknown): id is string =>
-                  typeof id === "string" &&
-                  (id === "circle" ||
-                    people.some((person) => person.id === id)),
+                  typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id),
               ),
             ),
           ]);
@@ -602,8 +694,15 @@ export default function DetourApp() {
     } catch {
       setStorageError(true);
     }
-    if (new URLSearchParams(window.location.search).get("invite") === "circle")
-      setOverlay({ type: "circle" });
+    const invite = new URLSearchParams(window.location.search).get("invite");
+    if (invite === "circle") {
+      const sample = findDetours(
+        personFromProfile(defaultProfile),
+        people,
+      ).circle;
+      if (sample)
+        setOverlay({ type: "circle", members: sample, preview: true });
+    } else if (invite) setOverlay({ type: "invitation", id: invite });
     setReady(true);
   }, []);
 
@@ -617,17 +716,183 @@ export default function DetourApp() {
   }, [profile, saved, ready]);
 
   useEffect(() => {
+    if (!ready) return;
+    const controller = new AbortController();
+    setNetworkLoading(true);
+    setNetworkError("");
+    requestJson<Network>("/api/network", { signal: controller.signal })
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        setNetwork(result);
+        if (!hasDraft.current && result.mode === "connected") {
+          setProfile(
+            result.me?.profile ?? {
+              name: "",
+              offer: "",
+              ask: "",
+              mode: "In person",
+              available: true,
+            },
+          );
+          hasDraft.current = true;
+        }
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted)
+          setNetworkError(
+            error instanceof Error
+              ? error.message
+              : "Couldn’t load the event network.",
+          );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setNetworkLoading(false);
+      });
+    return () => controller.abort();
+  }, [ready, reload]);
+
+  useEffect(() => {
+    if (!connected || (!query.trim() && !availableOnly)) {
+      setSearchPeople(null);
+      setSearchError("");
+      setSearchLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setSearchPeople(null);
+    setSearchLoading(true);
+    setSearchError("");
+    const timeout = window.setTimeout(() => {
+      const params = new URLSearchParams({
+        q: query,
+        available: String(availableOnly),
+      });
+      requestJson<Network>(`/api/network?${params}`, {
+        signal: controller.signal,
+      })
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          if (result.mode !== "connected")
+            throw new Error(
+              "The event network disconnected. Refresh the network before continuing.",
+            );
+          setSearchPeople(result.people);
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted)
+            setSearchError(
+              error instanceof Error
+                ? error.message
+                : "Search couldn’t complete. Try again.",
+            );
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setSearchLoading(false);
+        });
+    }, 250);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [connected, query, availableOnly, reload]);
+
+  useEffect(() => {
+    if (!connected || !network?.me) {
+      setInvitations([]);
+      setInvitationsError("");
+      setInvitationsLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setInvitationsLoading(true);
+    setInvitationsError("");
+    requestJson<{ invitations: Invitation[] }>("/api/invitations", {
+      signal: controller.signal,
+    })
+      .then((result) => {
+        if (!controller.signal.aborted) setInvitations(result.invitations);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted)
+          setInvitationsError(
+            error instanceof Error
+              ? error.message
+              : "Couldn’t load your invitations.",
+          );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setInvitationsLoading(false);
+      });
+    return () => controller.abort();
+  }, [connected, network?.me?.id, inviteReload]);
+
+  useEffect(() => {
+    if (!invitationId) return;
+    const controller = new AbortController();
+    setActiveInvitation(null);
+    setInvitationError("");
+    requestJson<Invitation>(
+      `/api/invitations/${encodeURIComponent(invitationId)}`,
+      { signal: controller.signal },
+    )
+      .then((result) => {
+        if (!controller.signal.aborted) setActiveInvitation(result);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted)
+          setInvitationError(
+            error instanceof Error
+              ? error.message
+              : "Couldn’t open this invitation.",
+          );
+      });
+    return () => controller.abort();
+  }, [invitationId, inviteReload]);
+
+  useEffect(() => {
+    setActionError("");
+  }, [overlay]);
+  useEffect(() => {
     if (!toast) return;
     const timeout = window.setTimeout(() => setToast(""), 4500);
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
-  const visiblePeople = filterPeople(people, query, topic, availableOnly);
-  const savedPeople = people.filter((person) => saved.includes(person.id));
+  const allPeople = network?.people ?? [];
+  const matchingProfile = connected ? network?.me?.profile : profile;
+  const self = matchingProfile
+    ? personFromProfile(matchingProfile, network?.me?.id ?? "you")
+    : null;
+  const candidates = allPeople.filter(
+    (person) => !connected || person.mode === matchingProfile?.mode,
+  );
+  const matches = self
+    ? findDetours(self, candidates)
+    : { circle: null, pairs: [] };
+  const circle = matches.circle;
+  const visiblePeople = connected
+    ? query.trim() || availableOnly
+      ? (searchPeople ?? [])
+      : allPeople
+    : filterPeople(allPeople, query, topic, availableOnly);
+  const savedPeople = allPeople.filter((person) => saved.includes(person.id));
   const circleSaved = saved.includes("circle");
-  const originalCircleFits =
-    profile.offer === defaultProfile.offer &&
-    profile.ask === defaultProfile.ask;
+  const draftChanged =
+    !!network?.me &&
+    JSON.stringify(profile) !== JSON.stringify(network.me.profile);
+  const selectedShare =
+    invitations.find((invite) => invite.id === shareId) ?? invitations[0];
+  const personCanInvite =
+    overlay?.type === "person" &&
+    !!self?.available &&
+    overlay.person.available &&
+    overlay.person.id !== self.id &&
+    overlay.person.mode === matchingProfile?.mode;
+  const viewerIsMember =
+    !!activeInvitation?.viewerId &&
+    activeInvitation.members.some(
+      (member) => member.id === activeInvitation.viewerId,
+    );
 
   function navigate(next: View) {
     setView(next);
@@ -636,10 +901,18 @@ export default function DetourApp() {
     );
     window.scrollTo({ top: 0, behavior: "instant" });
   }
+  function openCircle() {
+    if (circle)
+      setOverlay({ type: "circle", members: circle, preview: !connected });
+  }
   function saveDetour(id: string) {
     setSaved((current) => (current.includes(id) ? current : [...current, id]));
     setOverlay(null);
-    setToast("Detour saved. Find it in My detours.");
+    setToast(
+      id === "circle"
+        ? "Your latest circle suggestion is bookmarked."
+        : "Detour saved. Find it in My detours.",
+    );
   }
   function removeDetour(id: string) {
     setSaved((current) => current.filter((item) => item !== id));
@@ -650,6 +923,110 @@ export default function DetourApp() {
     setTopic("All people");
     setAvailableOnly(false);
     searchRef.current?.focus();
+  }
+  async function publish() {
+    if (validateProfile(profile)) {
+      setOverlay({ type: "profile" });
+      return;
+    }
+    setBusy(true);
+    setActionError("");
+    try {
+      const me = await requestJson<{ id: string; profile: Profile }>(
+        "/api/profile",
+        { method: "POST", body: JSON.stringify(profile) },
+      );
+      setNetwork((current) => (current ? { ...current, me } : current));
+      setReload((value) => value + 1);
+      setInviteReload((value) => value + 1);
+      setToast("Your introduction is published to the event network.");
+    } catch (error) {
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Couldn’t publish your introduction.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function withdraw() {
+    setBusy(true);
+    setActionError("");
+    try {
+      await requestJson("/api/profile", { method: "DELETE" });
+      setNetwork((current) => (current ? { ...current, me: null } : current));
+      setInvitations([]);
+      setShareId(null);
+      setReload((value) => value + 1);
+      setToast(
+        "Your introduction is no longer public. Your local draft is kept.",
+      );
+    } catch (error) {
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Couldn’t withdraw your introduction.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function createInvite(members: Person[]) {
+    setBusy(true);
+    setActionError("");
+    try {
+      const invitation = await requestJson<Invitation>("/api/invitations", {
+        method: "POST",
+        body: JSON.stringify({
+          memberIds: members.map((member) => member.id),
+          meetingSpot:
+            matchingProfile?.mode === "Text first"
+              ? "Agree a text channel together"
+              : "Coffee bar",
+        }),
+      });
+      setActiveInvitation(invitation);
+      setInvitations((current) => [
+        invitation,
+        ...current.filter((item) => item.id !== invitation.id),
+      ]);
+      setShareId(invitation.id);
+      setInviteReload((value) => value + 1);
+      setOverlay({ type: "invitation", id: invitation.id });
+      setToast("Invitation created. Share the link with your invited people.");
+    } catch (error) {
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Couldn’t create this invitation.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function acceptInvite(id: string) {
+    setBusy(true);
+    setActionError("");
+    try {
+      const invitation = await requestJson<Invitation>(
+        `/api/invitations/${encodeURIComponent(id)}/accept`,
+        { method: "POST", body: "{}" },
+      );
+      setActiveInvitation(invitation);
+      setInvitations((current) =>
+        current.map((item) => (item.id === id ? invitation : item)),
+      );
+      setToast("You’ve accepted this detour.");
+    } catch (error) {
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "Couldn’t accept this invitation.",
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -706,10 +1083,12 @@ export default function DetourApp() {
             aria-label="Edit your introduction"
           >
             <span className="hidden md:inline">
-              Hey, {profile.name.split(" ")[0]}
+              {profile.name
+                ? `Hey, ${profile.name.split(" ")[0]}`
+                : "Your introduction"}
             </span>
             <Avatar
-              initials={profile.name.slice(0, 2).toUpperCase()}
+              initials={profile.name.slice(0, 2).toUpperCase() || "?"}
               size="small"
             />
           </button>
@@ -724,13 +1103,45 @@ export default function DetourApp() {
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <MapPinIcon size={16} />
             <span className="font-medium">Cloud Native Hackathon</span>
-            <span className="text-muted-foreground">/ Salt Lake City</span>
+            <span className="text-muted-foreground">
+              / {preview ? "Demo playground" : "Meet your next collaborator"}
+            </span>
           </p>
           <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">
             <span className="size-1.5 rounded-full bg-accent" />
-            Demo playground
+            {networkError
+              ? "Network unavailable"
+              : connected
+                ? "Event network"
+                : preview
+                  ? "Demo playground · fictional people"
+                  : "Connecting…"}
           </span>
         </div>
+
+        {networkError && (
+          <div
+            role="alert"
+            className="mb-5 rounded-xl bg-accent-subtle p-4 text-sm"
+          >
+            <p>{networkError}</p>
+            <button
+              className="text-link mt-2"
+              onClick={() => setReload((value) => value + 1)}
+              disabled={networkLoading}
+            >
+              Retry network
+            </button>
+          </div>
+        )}
+        {!overlay && actionError && (
+          <p
+            role="alert"
+            className="mb-5 rounded-xl bg-accent-subtle p-4 text-sm"
+          >
+            {actionError}
+          </p>
+        )}
 
         {view === "discover" && (
           <>
@@ -766,9 +1177,9 @@ export default function DetourApp() {
                       size={17}
                       className="text-accent"
                     />
-                    {originalCircleFits
-                      ? "A detour worth taking"
-                      : "An example of a good detour"}
+                    {preview
+                      ? "A sample detour, matched to your draft"
+                      : "A detour worth taking"}
                   </span>
                   <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <ClockIcon size={15} />
@@ -794,23 +1205,76 @@ export default function DetourApp() {
                       className="hidden shrink-0 sm:block"
                     />
                   </div>
-                  <CircleDiagram
-                    profile={originalCircleFits ? profile : defaultProfile}
-                  />
-                  <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-t border-border pt-5">
-                    <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <MapPinIcon size={16} />
-                      Coffee bar<span aria-hidden="true">/</span>Low pressure,
-                      good company
-                    </p>
-                    <button
-                      className="button-primary"
-                      onClick={() => setOverlay({ type: "circle" })}
-                    >
-                      {circleSaved ? "View your circle" : "Meet your circle"}
-                      <ArrowUpRightIcon size={18} />
-                    </button>
-                  </div>
+                  {circle && self ? (
+                    <>
+                      <CircleDiagram members={circle} selfId={self.id} />
+                      <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-t border-border pt-5">
+                        <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+                          Shared keywords connect every offer to someone else’s
+                          ask. No AI scoring.{" "}
+                          {connected && "Uses your published introduction."}
+                        </p>
+                        <button className="button-primary" onClick={openCircle}>
+                          Meet your circle
+                          <ArrowUpRightIcon size={18} />
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-xl bg-subtle p-5">
+                      <h3 className="text-xl font-medium">
+                        {networkLoading
+                          ? "Finding your next detour…"
+                          : !network
+                            ? "The network isn’t ready yet."
+                            : connected && !self
+                              ? "Your circle starts with an introduction."
+                              : !self?.available
+                                ? "Take a detour when you’re ready."
+                                : "No complete circle just yet."}
+                      </h3>
+                      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                        {!network
+                          ? "Retry the network to discover people."
+                          : connected && !self
+                            ? "Add what you can offer and what you need, then publish your introduction to find people in the same connection mode."
+                            : !self?.available
+                              ? "Turn on your availability to see matching suggestions. Publish the update if your introduction is already live."
+                              : "A circle needs three people who can each help the next. Matching checks shared keywords in offers and asks."}
+                      </p>
+                      {matches.pairs.length > 0 && self && (
+                        <div className="mt-5 space-y-3">
+                          <p className="text-sm font-medium">
+                            Start with a one-to-one detour.
+                          </p>
+                          {matches.pairs.slice(0, 3).map((person) => (
+                            <button
+                              key={person.id}
+                              onClick={() =>
+                                setOverlay({ type: "person", person })
+                              }
+                              className="flex w-full items-start justify-between gap-3 rounded-lg bg-background p-3 text-left text-sm"
+                            >
+                              <span>
+                                <span className="block font-medium">
+                                  {person.name}
+                                </span>
+                                <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                                  {helpTopics(self.offer, person.ask).length > 0
+                                    ? `You can help with ${helpTopics(self.offer, person.ask).join(", ")}.`
+                                    : `Can help you with ${helpTopics(person.offer, self.ask).join(", ")}.`}
+                                </span>
+                              </span>
+                              <ArrowUpRightIcon
+                                size={18}
+                                className="shrink-0"
+                              />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </section>
 
@@ -840,14 +1304,18 @@ export default function DetourApp() {
                         <PlusIcon size={13} />
                         You can help with
                       </p>
-                      <p className="text-sm leading-relaxed">{profile.offer}</p>
+                      <p className="text-sm leading-relaxed">
+                        {profile.offer || "A skill or a fresh pair of eyes."}
+                      </p>
                     </div>
                     <div>
                       <p className="mb-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
                         <MagnifyingGlassIcon size={13} />
                         You’re looking for
                       </p>
-                      <p className="text-sm leading-relaxed">{profile.ask}</p>
+                      <p className="text-sm leading-relaxed">
+                        {profile.ask || "One thing you’d like to get unstuck."}
+                      </p>
                     </div>
                   </div>
                   <div className="mt-5 flex items-center justify-between gap-3 border-t border-border pt-4">
@@ -869,6 +1337,47 @@ export default function DetourApp() {
                       {profile.mode}
                     </span>
                   </div>
+                  {connected && (
+                    <div className="mt-5 space-y-3 border-t border-border pt-4">
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {network.me
+                          ? draftChanged
+                            ? "You have unpublished changes. Matching still uses your published introduction."
+                            : "Your introduction is published. This browser owns your profile and invitation responses."
+                          : "Publishing shares your name, offer, ask, availability, and connection mode with the event network. Your draft is private until then."}
+                      </p>
+                      <button
+                        onClick={publish}
+                        disabled={busy || (!!network.me && !draftChanged)}
+                        className="button-primary w-full"
+                      >
+                        {busy
+                          ? "Saving…"
+                          : network.me
+                            ? "Update published introduction"
+                            : "Publish introduction"}
+                      </button>
+                      {network.me && (
+                        <button
+                          onClick={withdraw}
+                          disabled={busy}
+                          className="text-link text-muted-foreground"
+                        >
+                          Withdraw introduction
+                        </button>
+                      )}
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {network.me
+                          ? "Withdrawing also closes your active invitations. Keep this browser’s cookies to return to your profile."
+                          : "No account needed. Use this browser to return to your published introduction."}
+                      </p>
+                    </div>
+                  )}
+                  {preview && (
+                    <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
+                      Local draft. People in this playground are fictional.
+                    </p>
+                  )}
                 </section>
                 <button
                   onClick={() => navigate("card")}
@@ -917,6 +1426,7 @@ export default function DetourApp() {
                     id="people-search"
                     ref={searchRef}
                     type="search"
+                    maxLength={180}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="Try Kubernetes, design, AI…"
@@ -930,16 +1440,26 @@ export default function DetourApp() {
                   role="group"
                   aria-label="Filter by interest"
                 >
-                  {topics.map((item) => (
+                  {preview &&
+                    topics.map((item) => (
+                      <button
+                        key={item}
+                        onClick={() => setTopic(item)}
+                        aria-pressed={topic === item}
+                        className={`min-h-10 rounded-full border px-4 py-2 text-xs font-medium transition-colors ${topic === item ? "border-foreground bg-foreground text-background" : "border-border hover:border-muted-foreground"}`}
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  {connected && (
                     <button
-                      key={item}
-                      onClick={() => setTopic(item)}
-                      aria-pressed={topic === item}
-                      className={`min-h-10 rounded-full border px-4 py-2 text-xs font-medium transition-colors ${topic === item ? "border-foreground bg-foreground text-background" : "border-border hover:border-muted-foreground"}`}
+                      onClick={() => setReload((value) => value + 1)}
+                      disabled={networkLoading}
+                      className="text-link text-xs text-muted-foreground"
                     >
-                      {item}
+                      {networkLoading ? "Refreshing people…" : "Refresh people"}
                     </button>
-                  ))}
+                  )}
                 </div>
                 <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
                   <input
@@ -955,7 +1475,31 @@ export default function DetourApp() {
                 {visiblePeople.length}{" "}
                 {visiblePeople.length === 1 ? "person" : "people"} found
               </p>
-              {visiblePeople.length > 0 ? (
+              {networkLoading || searchLoading ? (
+                <p
+                  role="status"
+                  className="py-10 text-sm text-muted-foreground"
+                >
+                  Finding people…
+                </p>
+              ) : searchError ? (
+                <div
+                  role="alert"
+                  className="rounded-xl bg-accent-subtle p-5 text-sm"
+                >
+                  <p>{searchError}</p>
+                  <button
+                    onClick={() => setReload((value) => value + 1)}
+                    className="text-link mt-2"
+                  >
+                    Retry search
+                  </button>
+                </div>
+              ) : !network ? (
+                <p className="py-10 text-sm text-muted-foreground">
+                  People will appear when the event network is available.
+                </p>
+              ) : visiblePeople.length > 0 ? (
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {visiblePeople.map((person) => (
                     <PersonCard
@@ -977,8 +1521,9 @@ export default function DetourApp() {
                     A little further off the beaten path.
                   </h3>
                   <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-                    No one matches these filters yet. Try a broader skill or
-                    explore everyone here.
+                    {query || availableOnly || topic !== "All people"
+                      ? "No one matches these filters yet. Try a broader skill or explore everyone here."
+                      : "No introductions are published yet. Publish yours to help the next person find you."}
                   </p>
                   <button
                     onClick={clearFilters}
@@ -1024,6 +1569,74 @@ export default function DetourApp() {
               Keep the connections you’re curious about in one place. Saved
               here, ready when you are.
             </p>
+            {connected && (
+              <div className="mb-10">
+                <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                  <h2 className="text-2xl font-medium">Your invitations</h2>
+                  <button
+                    onClick={() => setInviteReload((value) => value + 1)}
+                    disabled={invitationsLoading || !network.me}
+                    className="text-link"
+                  >
+                    {invitationsLoading ? "Refreshing…" : "Refresh responses"}
+                  </button>
+                </div>
+                {invitationsError && (
+                  <p
+                    role="alert"
+                    className="mb-4 rounded-xl bg-accent-subtle p-4 text-sm"
+                  >
+                    {invitationsError}
+                  </p>
+                )}
+                {invitations.length > 0 ? (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {invitations.map((invitation) => (
+                      <article
+                        key={invitation.id}
+                        className="rounded-xl border border-border bg-surface p-5"
+                      >
+                        <h3 className="text-xl font-medium">
+                          {invitation.members
+                            .map((member) =>
+                              member.id === network.me?.id
+                                ? "You"
+                                : member.name,
+                            )
+                            .join(" + ")}
+                        </h3>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          {invitation.acceptedIds.length} of{" "}
+                          {invitation.members.length} accepted ·{" "}
+                          {invitation.mode}
+                        </p>
+                        <p className="mt-2 text-sm">{invitation.meetingSpot}</p>
+                        <button
+                          onClick={() =>
+                            setOverlay({
+                              type: "invitation",
+                              id: invitation.id,
+                            })
+                          }
+                          className="text-link mt-4"
+                        >
+                          Open invitation
+                          <ArrowRightIcon size={16} />
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    {invitationsLoading
+                      ? "Loading invitations…"
+                      : network.me
+                        ? "No active invitations yet. Meet a circle or invite someone from Discover."
+                        : "Publish your introduction to create invitations and respond from this browser."}
+                  </p>
+                )}
+              </div>
+            )}
             {saved.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border py-16 text-center">
                 <span className="mx-auto mb-5 flex size-20 items-center justify-center rounded-full bg-secondary">
@@ -1051,10 +1664,10 @@ export default function DetourApp() {
                     <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
                       <div>
                         <p className="mb-2 text-xs text-muted-foreground">
-                          Your sample circle
+                          Bookmark · follows your current introduction
                         </p>
                         <h2 className="text-3xl font-medium">
-                          You, Cara & Ben.
+                          Latest suggested circle
                         </h2>
                       </div>
                       <span className="inline-flex items-center gap-2 rounded-full bg-success-subtle px-3 py-1.5 text-xs">
@@ -1062,9 +1675,15 @@ export default function DetourApp() {
                         Saved for later
                       </span>
                     </div>
-                    <CircleDiagram
-                      profile={originalCircleFits ? profile : defaultProfile}
-                    />
+                    {circle && self ? (
+                      <CircleDiagram members={circle} selfId={self.id} />
+                    ) : (
+                      <p className="text-sm leading-relaxed text-muted-foreground">
+                        There isn’t a complete circle for your introduction
+                        right now. This bookmark will show the latest suggestion
+                        when one is available.
+                      </p>
+                    )}
                     <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-t border-border pt-5">
                       <button
                         className="text-link text-muted-foreground"
@@ -1074,7 +1693,8 @@ export default function DetourApp() {
                       </button>
                       <button
                         className="button-primary"
-                        onClick={() => setOverlay({ type: "circle" })}
+                        onClick={openCircle}
+                        disabled={!circle}
                       >
                         See the plan
                         <ArrowRightIcon size={18} />
@@ -1082,6 +1702,13 @@ export default function DetourApp() {
                     </div>
                   </article>
                 )}
+                {savedPeople.length === 0 &&
+                  saved.some((id) => id !== "circle") && (
+                    <p className="text-sm leading-relaxed text-muted-foreground">
+                      Your saved people aren’t in the current discovery list.
+                      Refresh the network or explore the people available now.
+                    </p>
+                  )}
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {savedPeople.map((person) => (
                     <div key={person.id}>
@@ -1116,7 +1743,20 @@ export default function DetourApp() {
             <p className="mb-10 mt-4 leading-relaxed text-muted-foreground">
               Small card. Interesting possibilities.
             </p>
-            <ShareCard profile={profile} notify={setToast} />
+            {selectedShare && !preview && (
+              <p className="mb-6 text-sm leading-relaxed text-muted-foreground">
+                Invitation for{" "}
+                {selectedShare.members.map((member) => member.name).join(", ")}{" "}
+                · {selectedShare.meetingSpot}
+              </p>
+            )}
+            <ShareCard
+              profile={network?.me?.profile ?? profile}
+              notify={setToast}
+              invitationId={selectedShare?.id ?? null}
+              preview={preview}
+              onDiscover={() => navigate("discover")}
+            />
           </section>
         )}
 
@@ -1141,7 +1781,9 @@ export default function DetourApp() {
             onClick={() => setOverlay({ type: "about" })}
             className="min-h-9 text-xs text-muted-foreground underline-offset-4 hover:underline"
           >
-            Sample people. Real possibilities.
+            {preview
+              ? "Sample people. Real possibilities."
+              : "A little help goes a long way."}
           </button>
         </div>
       </footer>
@@ -1161,7 +1803,7 @@ export default function DetourApp() {
           onSave={(next) => {
             setProfile(next);
             setOverlay(null);
-            setToast("Your introduction is saved.");
+            setToast("Your draft is saved on this device.");
           }}
         />
       )}
@@ -1171,55 +1813,35 @@ export default function DetourApp() {
           onClose={() => setOverlay(null)}
         >
           <p className="mb-6 leading-relaxed text-muted-foreground">
-            A model to ship, a dashboard to improve, a fresh perspective to
-            share. Here’s how this sample circle fits together.
+            {overlay.preview
+              ? "A sample circle with fictional attendees. "
+              : "Everyone has a missing piece. "}
+            These shared keywords connect each offer to the next person’s ask.
           </p>
           <div className="space-y-3">
-            {[
-              {
-                name: "Ben → you",
-                color: "lilac",
-                text: "Walk through a first Kubernetes deployment.",
-              },
-              {
-                name: "You → Cara",
-                color: "sage",
-                text: "Explore a faster on-device model.",
-              },
-              {
-                name: "Cara → Ben",
-                color: "peach",
-                text: "Give the dashboard an accessibility check.",
-              },
-            ].map((item) => (
-              <div
-                key={item.name}
-                className="flex items-start gap-3 rounded-lg bg-surface p-4"
-              >
-                <span
-                  className={`mt-1 size-3 shrink-0 rounded-full ${colors[item.color as Person["color"]]}`}
-                />
-                <div>
-                  <p className="text-sm font-medium">{item.name}</p>
+            {overlay.members.map((member, i) => {
+              const next = overlay.members[(i + 1) % overlay.members.length];
+              return (
+                <div key={member.id} className="rounded-lg bg-surface p-4">
+                  <p className="text-sm font-medium">
+                    {member.name} → {next.name}
+                  </p>
                   <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                    {item.text}
+                    Can help with{" "}
+                    {helpTopics(member.offer, next.ask).join(", ")}.
                   </p>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <div className="my-6 flex flex-wrap gap-4 text-sm">
             <span className="flex items-center gap-2">
               <ClockIcon size={18} />
-              10 minutes
-            </span>
-            <span className="flex items-center gap-2">
-              <MapPinIcon size={18} />
-              Coffee bar
+              Start with 10 minutes
             </span>
             <span className="flex items-center gap-2">
               <ChatCircleDotsIcon size={18} />
-              {profile.mode}
+              {overlay.preview ? "Sample plan" : matchingProfile?.mode}
             </span>
           </div>
           <div className="rounded-xl bg-success-subtle p-5">
@@ -1230,16 +1852,155 @@ export default function DetourApp() {
               “What’s the one thing you’d love to get unstuck today?”
             </p>
           </div>
-          <button
-            onClick={() => saveDetour("circle")}
-            className="button-primary mt-6 w-full"
-          >
-            {circleSaved ? "Keep this detour saved" : "Save this detour"}
-            <BookmarkSimpleIcon size={18} />
-          </button>
-          <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
-            A sample plan, saved on this device. No invitations are sent.
-          </p>
+          {actionError && (
+            <p role="alert" className="mt-4 text-sm text-danger">
+              {actionError}
+            </p>
+          )}
+          {overlay.preview ? (
+            <>
+              <button
+                onClick={() => saveDetour("circle")}
+                className="button-primary mt-6 w-full"
+              >
+                Bookmark latest suggestion
+                <BookmarkSimpleIcon size={18} />
+              </button>
+              <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
+                A local bookmark that follows your current introduction. No live
+                invitation is created.
+              </p>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => createInvite(overlay.members)}
+                disabled={busy}
+                className="button-primary mt-6 w-full"
+              >
+                {busy ? "Creating invitation…" : "Create circle invitation"}
+                <ArrowRightIcon size={18} />
+              </button>
+              <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
+                Creates a shareable link for these people. Each person accepts
+                using their own published profile.
+              </p>
+            </>
+          )}
+        </Modal>
+      )}
+      {overlay?.type === "invitation" && (
+        <Modal title="A detour, together." onClose={() => setOverlay(null)}>
+          {invitationError ? (
+            <div role="alert">
+              <p className="text-sm leading-relaxed text-danger">
+                {invitationError}
+              </p>
+              <button
+                className="button-secondary mt-4"
+                onClick={() => setInviteReload((value) => value + 1)}
+              >
+                Retry invitation
+              </button>
+            </div>
+          ) : !activeInvitation ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              Opening invitation…
+            </p>
+          ) : (
+            <>
+              <p className="mb-5 text-sm leading-relaxed text-muted-foreground">
+                {activeInvitation.mode} · {activeInvitation.meetingSpot}
+                <br />
+                Expires {new Date(activeInvitation.expiresAt).toLocaleString()}.
+              </p>
+              <ul className="space-y-3">
+                {activeInvitation.members.map((member) => (
+                  <li
+                    key={member.id}
+                    className="flex items-start gap-3 rounded-xl bg-subtle p-4"
+                  >
+                    <Avatar initials={member.initials} color={member.color} />
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium">
+                        {member.name}
+                        {member.id === activeInvitation.viewerId && " (you)"}
+                      </p>
+                      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                        {member.offer}
+                      </p>
+                      <p className="mt-2 flex items-center gap-1 text-xs">
+                        {activeInvitation.acceptedIds.includes(member.id) ? (
+                          <>
+                            <CheckCircleIcon size={15} />
+                            Accepted
+                          </>
+                        ) : (
+                          <>
+                            <ClockIcon size={15} />
+                            Waiting for their response
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              {actionError && (
+                <p role="alert" className="mt-4 text-sm text-danger">
+                  {actionError}
+                </p>
+              )}
+              {viewerIsMember ? (
+                <div className="mt-6 space-y-3">
+                  {!activeInvitation.acceptedIds.includes(
+                    activeInvitation.viewerId!,
+                  ) && (
+                    <button
+                      onClick={() => acceptInvite(activeInvitation.id)}
+                      disabled={
+                        busy ||
+                        Date.parse(activeInvitation.expiresAt) <= Date.now()
+                      }
+                      className="button-primary w-full"
+                    >
+                      {busy ? "Accepting…" : "Accept this detour"}
+                      <CheckIcon size={18} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setInvitations((current) =>
+                        current.some((item) => item.id === activeInvitation.id)
+                          ? current
+                          : [activeInvitation, ...current],
+                      );
+                      setShareId(activeInvitation.id);
+                      setOverlay(null);
+                      navigate("card");
+                    }}
+                    className="button-secondary w-full"
+                  >
+                    Share invitation
+                    <BroadcastIcon size={18} />
+                  </button>
+                </div>
+              ) : (
+                <p className="mt-5 rounded-xl bg-accent-subtle p-4 text-sm leading-relaxed">
+                  This invitation is for the people listed above. To accept your
+                  place, open it in the original browser where you published
+                  your introduction. A link or NFC tap doesn’t let another guest
+                  claim a place.
+                </p>
+              )}
+              <button
+                className="text-link mt-4"
+                onClick={() => setInviteReload((value) => value + 1)}
+              >
+                Refresh responses
+              </button>
+            </>
+          )}
         </Modal>
       )}
       {overlay?.type === "person" && (
@@ -1278,7 +2039,7 @@ export default function DetourApp() {
             <span aria-hidden="true">/</span>
             {overlay.person.available
               ? "Open to a detour"
-              : "In a workshop right now"}
+              : "Not available right now"}
           </p>
           <div className={`rounded-xl p-5 ${colors[overlay.person.color]}`}>
             <p className="text-xs text-muted-foreground">Break the ice</p>
@@ -1300,8 +2061,36 @@ export default function DetourApp() {
               ? "Keep this detour saved"
               : "Save this detour"}
           </button>
+          {connected && (
+            <>
+              <button
+                disabled={busy || !personCanInvite}
+                onClick={() => {
+                  if (self && personCanInvite)
+                    createInvite([self, overlay.person]);
+                }}
+                className="button-secondary mt-3 w-full"
+              >
+                {busy ? "Creating invitation…" : "Create one-to-one invitation"}
+                <ArrowRightIcon size={18} />
+              </button>
+              {!personCanInvite && (
+                <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                  Publish your introduction and make sure you’re both available
+                  in the same connection mode to create an invitation.
+                </p>
+              )}
+              {actionError && (
+                <p role="alert" className="mt-3 text-sm text-danger">
+                  {actionError}
+                </p>
+              )}
+            </>
+          )}
           <p className="mt-3 text-center text-xs text-muted-foreground">
-            Fictional attendee for this demo. No messages are sent.
+            {preview
+              ? "Fictional attendee for this demo."
+              : "Saved people stay on this device. Share invitations yourself."}
           </p>
         </Modal>
       )}
@@ -1340,9 +2129,11 @@ export default function DetourApp() {
             ))}
           </ol>
           <p className="rounded-xl bg-subtle p-4 text-sm leading-relaxed text-muted-foreground">
-            You’re exploring a working UI prototype with fictional attendees.
-            Profiles and saved detours stay in your browser. Matching, on-device
-            AI, and live invitations will come with the connected version.
+            {preview
+              ? "This playground uses fictional attendees. Your draft and bookmarks stay in your browser."
+              : "Your draft and bookmarks stay in your browser. Publishing shares your introduction with the event network. Your browser’s cookie owns your published identity."}{" "}
+            Circles use shared keywords, not AI. Invitations require each
+            member’s own response; no email or messages are sent.
           </p>
         </Modal>
       )}
