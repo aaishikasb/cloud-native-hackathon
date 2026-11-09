@@ -1,0 +1,17 @@
+# The vcluster has no Gateway; the hackathon platform supplies this public route.
+# Keep this starter resource so Argo CD retains the platform's expected topology.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: app
+spec:
+  parentRefs:
+    - name: cnh
+      namespace: gateway
+      sectionName: https
+  hostnames:
+    - salty.cnh.radarhq.io
+  rules:
+    - backendRefs:
+        - name: app
+          port: 80

@@ -1,0 +1,19 @@
+# Apply once through Radar after the first image build and secret setup succeed.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app
+  namespace: team-salty
+spec:
+  project: team-salty
+  source:
+    repoURL: https://github.com/aaishikasb/cloud-native-hackathon.git
+    targetRevision: main
+    path: deploy
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: team-salty
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
