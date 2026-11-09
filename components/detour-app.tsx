@@ -1456,7 +1456,7 @@ export default function DetourApp({
                 key={id}
                 onClick={() => navigate(id)}
                 aria-current={view === id ? "page" : undefined}
-                className={`flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs sm:flex-none sm:gap-2 sm:px-4 sm:text-sm ${view === id ? "bg-subtle font-medium" : "text-muted-foreground hover:bg-subtle/60 hover:text-foreground"}`}
+                className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-xs sm:flex-none sm:flex-row sm:gap-2 sm:px-4 sm:text-sm ${view === id ? "bg-subtle font-medium" : "text-muted-foreground hover:bg-subtle/60 hover:text-foreground"}`}
               >
                 <Icon size={18} weight={view === id ? "fill" : "regular"} />
                 {label}
