@@ -84,6 +84,8 @@ Gitar is connected to **aaishikasb/cloud-native-hackathon**. Confirm that reposi
 
 `.gitar/review/detour.md` asks Gitar to check profile validation, consent, guest authorization, invitation expiry, concurrent acceptance, secret handling, and telemetry privacy. Gitar loads this directory as [custom review instructions](https://docs.gitar.ai/configuration/repository-config). This file does not install the app or prove a review has run.
 
+`.gitar/rules/attendee-consent.md` is a separate `type: check` repository rule for affected backend, UI, persistence, and telemetry changes. It verifies explicit publication, server-owned participant identity, and private credentials, reporting code/test evidence in Verification without applying changes. [Gitar's rule format](https://docs.gitar.ai/features/rules) supports the `title`, `description`, `type`, `when`, and `actions` frontmatter used here. A PR touching none of those paths may correctly skip the rule; `gitar display:verbose` shows evaluated rules and skip reasons. Custom review instructions alone do not populate this rules result.
+
 Open an implementation PR, let CI and Gitar finish, then inspect the findings and resolve any legitimate issue with a focused change. Save the PR link, Gitar review, relevant fix, and passing checks. Automatic merge and broad auto-apply permissions are not enabled by this repository.
 
 ## Submission evidence still to collect
