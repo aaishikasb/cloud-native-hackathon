@@ -9,4 +9,4 @@ images:
   - name: app
     newName: ghcr.io/aaishikasb/cloud-native-hackathon
     # CI replaces this with a built commit's full SHA. Wait for that before enabling GitOps.
-    newTag: pending-first-build
+    newTag: "c7923f874b5f92d96f8c698aae687a7457a601be"
