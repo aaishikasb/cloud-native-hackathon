@@ -15,12 +15,12 @@ export async function POST(request: Request) {
   return respond(() =>
     traceOperation("profile.publish", {}, async () => {
       requireSameOrigin(request);
-      const { id, profile, token } = await publishProfile(
+      const { id, eventId, profile, token } = await publishProfile(
         request,
         await readJson(request),
       );
       return Response.json(
-        { id, profile },
+        { id, eventId, profile },
         { headers: { "Set-Cookie": guestCookie(token, request) } },
       );
     }),
@@ -31,10 +31,8 @@ export async function DELETE(request: Request) {
     traceOperation("profile.withdraw", {}, async () => {
       requireSameOrigin(request);
       await withdrawProfile(request);
-      return Response.json(
-        { withdrawn: true },
-        { headers: { "Set-Cookie": guestCookie("", request, true) } },
-      );
+      // The guest identity may still own an introduction in another conference.
+      return Response.json({ withdrawn: true });
     }),
   );
 }

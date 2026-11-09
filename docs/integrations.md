@@ -33,12 +33,19 @@ Use Node 24 and npm. Copy `.env.example` to `.env.local` and fill it in locally.
 | `ELASTICSEARCH_URL` | Elasticsearch HTTPS endpoint, without a trailing slash; localhost HTTP is supported for development |
 | `ELASTICSEARCH_API_KEY` | Encoded Elasticsearch API key, without the `ApiKey ` prefix |
 | `APP_URL` | Canonical origin, such as `http://localhost:3000`; use the public HTTPS origin after deployment |
+| `EVENT_ACCESS_CODES` | JSON object mapping `cloud-native-hackathon` and `kubecon-na-2026` to distinct, strong organizer-shared access codes |
 | `OTEL_SERVICE_NAME` | `detour` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Dash0 OTLP **HTTP** base endpoint, without `/v1/traces` or a trailing slash |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | `Authorization=Bearer <ingest-token>,Dash0-Dataset=<dataset>` |
 
 Leave both Elasticsearch settings empty to use the labeled fictional preview. Partial configuration, authentication failures, or an unavailable configured service return an error; the app does not silently substitute sample people. `/healthz` checks the process; `/readyz` requires working Elasticsearch and returns 503 when it is unconfigured.
+
+### Conference access
+
+Production requires `EVENT_ACCESS_CODES` in the runtime Secret. Use independently generated codes of 8–80 characters without leading or trailing whitespace, and share them only with intended event attendees. The server grants a signed, HttpOnly, same-site cookie for that conference for 12 hours. Rotating a conference's code invalidates its existing grants. Missing or malformed production configuration fails closed; leaving the variable unset permits an explicitly open local development/test preview. This is organizer-code access, not Wi-Fi detection or proof that someone is at the venue. Readiness remains independent of the attendee access gate.
+
+Conference selection scopes published introductions and invitations. Existing records without `eventId` belong to Cloud Native Hackathon. A browser retains its guest identity across events; withdrawing one event introduction does not remove its ownership of another. Apply the additive `eventId` keyword mapping to both existing Elasticsearch indices before releasing conference-scoped writes.
 
 ```sh
 npm ci

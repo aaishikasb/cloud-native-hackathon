@@ -4,6 +4,14 @@ import { traceOperation } from "../telemetry.ts";
 export const PEOPLE_INDEX = "detour-people";
 export const INVITES_INDEX = "detour-invites";
 
+const INDEX_CHECK_TTL_MS = 60_000;
+let indexInitialization: {
+  url: string;
+  key: string;
+  expiresAt: number;
+  pending?: Promise<void>;
+} | undefined;
+
 export function hasElasticsearch(): boolean {
   const url = process.env.ELASTICSEARCH_URL;
   const key = process.env.ELASTICSEARCH_API_KEY;
@@ -73,14 +81,21 @@ export async function elastic<T>(
         cache: "no-store",
         redirect: "error",
         signal: AbortSignal.timeout(10_000),
+      }).catch((error: unknown) => {
+        if (indexInitialization?.url === url && indexInitialization.key === key)
+          indexInitialization.expiresAt = 0;
+        throw error;
       });
       if (response.status === 404 && allowMissing) return null;
       if (response.status === 409) throw new VersionConflict();
-      if (!response.ok)
+      if (!response.ok) {
+        if (indexInitialization?.url === url && indexInitialization.key === key)
+          indexInitialization.expiresAt = 0;
         throw new ApiError(
           503,
           "The conference network is unavailable. Please try again shortly.",
         );
+      }
       return method === "HEAD" ? ({} as T) : ((await response.json()) as T);
     },
   );
@@ -90,6 +105,7 @@ const mappings = {
   [PEOPLE_INDEX]: {
     dynamic: "strict",
     properties: {
+      eventId: { type: "keyword" },
       name: { type: "text" },
       offer: { type: "text" },
       ask: { type: "text" },
@@ -106,6 +122,7 @@ const mappings = {
   [INVITES_INDEX]: {
     dynamic: "strict",
     properties: {
+      eventId: { type: "keyword" },
       memberIds: { type: "keyword" },
       acceptedIds: { type: "keyword" },
       hostId: { type: "keyword" },
@@ -118,18 +135,35 @@ const mappings = {
 };
 
 export async function ensureIndices() {
-  // Recheck so externally removed indices can recover without restarting the app.
-  await Promise.all(
-    Object.entries(mappings).map(async ([index, mapping]) => {
-      if (await elastic(index, "HEAD", undefined, true)) return;
-      try {
-        await elastic(index, "PUT", { mappings: mapping });
-      } catch (error) {
-        // Concurrent first requests may both try to create an index.
-        if (!(await elastic(index, "HEAD", undefined, true))) throw error;
-      }
-    }),
-  );
+  const { url, key } = connection();
+  if (indexInitialization?.url !== url || indexInitialization.key !== key)
+    indexInitialization = { url, key, expiresAt: 0 };
+  const current = indexInitialization;
+  if (current.expiresAt > Date.now()) return;
+  if (!current.pending) {
+    // Recheck after one minute or an Elasticsearch failure, so removed indices recover.
+    current.pending = Promise.all(
+      Object.entries(mappings).map(async ([index, mapping]) => {
+        if (await elastic(index, "HEAD", undefined, true)) return;
+        try {
+          await elastic(index, "PUT", { mappings: mapping });
+        } catch (error) {
+          // Another process may create the index while this process is initializing.
+          if (!(await elastic(index, "HEAD", undefined, true))) throw error;
+        }
+      }),
+    ).then(() => {
+      current.expiresAt = Date.now() + INDEX_CHECK_TTL_MS;
+    }).finally(() => {
+      current.pending = undefined;
+    });
+  }
+  try {
+    await current.pending;
+  } catch (error) {
+    if (indexInitialization === current) indexInitialization = undefined;
+    throw error;
+  }
 }
 
 export type ElasticDocument<T> = {

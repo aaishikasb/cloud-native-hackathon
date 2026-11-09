@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { DEFAULT_EVENT_ID, getEventId, type EventId } from "../events.ts";
+import { requireEventAccess } from "./event-access.ts";
 import {
   filterPeople,
   people,
@@ -26,6 +28,7 @@ import {
 } from "./elasticsearch.ts";
 
 type PersonDocument = Profile & {
+  eventId?: EventId;
   ownerHash: string;
   topic: Topic;
   role: string;
@@ -34,8 +37,12 @@ type PersonDocument = Profile & {
   updatedAt: string;
 };
 
-export type PublicPerson = Person & { mode: Profile["mode"] };
+export type PublicPerson = Person & {
+  mode: Profile["mode"];
+  eventId: EventId;
+};
 export type InvitationDocument = {
+  eventId?: EventId;
   memberIds: string[];
   acceptedIds: string[];
   hostId: string;
@@ -45,6 +52,7 @@ export type InvitationDocument = {
   createdAt: string;
 };
 export type Invitation = {
+  eventId: EventId;
   id: string;
   members: PublicPerson[];
   acceptedIds: string[];
@@ -62,6 +70,7 @@ const topics: Topic[] = [
   "Open source",
 ];
 const publicFields = [
+  "eventId",
   "name",
   "offer",
   "ask",
@@ -75,6 +84,7 @@ const publicFields = [
 export function publicPerson(id: string, person: PersonDocument): PublicPerson {
   return {
     id,
+    eventId: person.eventId ?? DEFAULT_EVENT_ID,
     name: person.name,
     role: person.role,
     initials: person.name
@@ -103,8 +113,31 @@ function profileOf(person: PersonDocument): Profile {
   };
 }
 
+function eventFromRequest(request: Request): EventId {
+  const eventId = getEventId(new URL(request.url).searchParams.get("event"));
+  if (!eventId) throw new ApiError(400, "Choose a supported conference.");
+  requireEventAccess(request, eventId);
+  return eventId;
+}
+
+function eventFilter(eventId: EventId) {
+  // Existing introductions and invitations predate conference selection and belong to the hackathon.
+  return eventId === DEFAULT_EVENT_ID
+    ? {
+        bool: {
+          should: [
+            { term: { eventId } },
+            { bool: { must_not: [{ exists: { field: "eventId" } }] } },
+          ],
+          minimum_should_match: 1,
+        },
+      }
+    : { term: { eventId } };
+}
+
 async function currentPerson(
   request: Request,
+  eventId: EventId,
 ): Promise<ElasticDocument<PersonDocument> | null> {
   // shortcut: identity belongs to one browser; add attendee login when recovery or verified identity is needed.
   const token = guestToken(request);
@@ -115,14 +148,21 @@ async function currentPerson(
     {
       size: 1,
       seq_no_primary_term: true,
-      query: { term: { ownerHash: ownerHash(token) } },
+      query: {
+        bool: {
+          filter: [
+            { term: { ownerHash: ownerHash(token) } },
+            eventFilter(eventId),
+          ],
+        },
+      },
     },
   );
   return result!.hits.hits[0] ?? null;
 }
 
-async function requirePerson(request: Request) {
-  const me = await currentPerson(request);
+async function requirePerson(request: Request, eventId: EventId) {
+  const me = await currentPerson(request, eventId);
   if (!me)
     throw new ApiError(
       401,
@@ -132,6 +172,7 @@ async function requirePerson(request: Request) {
 }
 
 export async function getNetwork(request: Request) {
+  const eventId = eventFromRequest(request);
   const params = new URL(request.url).searchParams;
   const query = (params.get("q") || "").trim();
   const topic = params.get("topic") || "All people";
@@ -143,13 +184,14 @@ export async function getNetwork(request: Request) {
     );
   if (!hasElasticsearch()) {
     return {
+      eventId,
       mode: "preview" as const,
       people: filterPeople(people, query, topic as Topic, availableOnly),
       me: null,
     };
   }
   await ensureIndices();
-  const filters: unknown[] = [];
+  const filters: unknown[] = [eventFilter(eventId)];
   if (availableOnly) filters.push({ term: { available: true } });
   if (topic !== "All people") filters.push({ term: { topic } });
   const [result, me] = await Promise.all([
@@ -175,9 +217,10 @@ export async function getNetwork(request: Request) {
         },
       },
     }),
-    currentPerson(request),
+    currentPerson(request, eventId),
   ]);
   return {
+    eventId,
     mode: "connected" as const,
     people: result!.hits.hits
       .filter((hit) => hit._id !== me?._id)
@@ -187,14 +230,16 @@ export async function getNetwork(request: Request) {
 }
 
 export async function publishProfile(request: Request, value: unknown) {
+  const eventId = eventFromRequest(request);
   const profile = parseProfile(value);
   await ensureIndices();
-  const current = await currentPerson(request);
-  const token = current ? guestToken(request)! : newGuestToken();
+  const current = await currentPerson(request, eventId);
+  const token = guestToken(request) ?? newGuestToken();
   const id = current?._id ?? randomUUID();
   const now = new Date().toISOString();
   const document: PersonDocument = {
     ...profile,
+    eventId,
     ownerHash: ownerHash(token),
     role: "Conference attendee",
     topic: "All people",
@@ -220,12 +265,13 @@ export async function publishProfile(request: Request, value: unknown) {
       );
     throw error;
   }
-  return { id, profile, token };
+  return { id, eventId, profile, token };
 }
 
 export async function withdrawProfile(request: Request) {
+  const eventId = eventFromRequest(request);
   await ensureIndices();
-  const me = await requirePerson(request);
+  const me = await requirePerson(request, eventId);
   try {
     await elastic(
       `${PEOPLE_INDEX}/_doc/${me._id}?refresh=wait_for&if_seq_no=${me._seq_no}&if_primary_term=${me._primary_term}`,
@@ -275,7 +321,10 @@ export function parseInvitation(value: unknown, selfId: string) {
   return { memberIds: ids as string[], meetingSpot: meetingSpot.trim() };
 }
 
-async function loadMembers(ids: string[]): Promise<Map<string, PublicPerson>> {
+async function loadMembers(
+  ids: string[],
+  eventId: EventId,
+): Promise<Map<string, PublicPerson>> {
   const result = await elastic<{
     docs: (ElasticDocument<PersonDocument> & { error?: unknown })[];
   }>(`${PEOPLE_INDEX}/_mget?_source=${publicFields.join(",")}`, "POST", {
@@ -288,7 +337,10 @@ async function loadMembers(ids: string[]): Promise<Map<string, PublicPerson>> {
     );
   return new Map(
     result!.docs
-      .filter((doc) => doc.found)
+      .filter(
+        (doc) =>
+          doc.found && (doc._source.eventId ?? DEFAULT_EVENT_ID) === eventId,
+      )
       .map((doc) => [doc._id, publicPerson(doc._id, doc._source)]),
   );
 }
@@ -297,13 +349,16 @@ function orderedMembers(ids: string[], available: Map<string, PublicPerson>) {
   if (ids.some((id) => !available.has(id)))
     throw new ApiError(
       410,
-      "Someone has withdrawn their introduction. Create a new detour with available people.",
+      "Someone no longer has an introduction in this event. Create a new detour with available people.",
     );
   return ids.map((id) => available.get(id)!);
 }
 
-async function membersFor(ids: string[]): Promise<PublicPerson[]> {
-  return orderedMembers(ids, await loadMembers(ids));
+async function membersFor(
+  ids: string[],
+  eventId: EventId,
+): Promise<PublicPerson[]> {
+  return orderedMembers(ids, await loadMembers(ids, eventId));
 }
 
 function assertAvailable(members: PublicPerson[], mode: Profile["mode"]) {
@@ -339,9 +394,10 @@ async function invitationView(
   assertOpen(document);
   return {
     id,
+    eventId: document.eventId ?? DEFAULT_EVENT_ID,
     members: members
       ? orderedMembers(document.memberIds, members)
-      : await membersFor(document.memberIds),
+      : await membersFor(document.memberIds, document.eventId ?? DEFAULT_EVENT_ID),
     acceptedIds: document.acceptedIds,
     expiresAt: document.expiresAt,
     meetingSpot: document.meetingSpot,
@@ -354,13 +410,15 @@ export async function createInvitation(
   request: Request,
   value: unknown,
 ): Promise<Invitation> {
+  const eventId = eventFromRequest(request);
   await ensureIndices();
-  const me = await requirePerson(request);
+  const me = await requirePerson(request, eventId);
   const { memberIds, meetingSpot } = parseInvitation(value, me._id);
-  const members = await membersFor(memberIds);
+  const members = await membersFor(memberIds, eventId);
   assertAvailable(members, me._source.mode);
   const id = randomUUID();
   const document: InvitationDocument = {
+    eventId,
     memberIds,
     meetingSpot,
     acceptedIds: [me._id],
@@ -376,6 +434,7 @@ export async function createInvitation(
   );
   return {
     id,
+    eventId,
     members,
     acceptedIds: document.acceptedIds,
     expiresAt: document.expiresAt,
@@ -385,7 +444,7 @@ export async function createInvitation(
   };
 }
 
-async function loadInvitation(id: string) {
+async function loadInvitation(id: string, eventId: EventId) {
   requireId(id);
   const result = await elastic<ElasticDocument<InvitationDocument>>(
     `${INVITES_INDEX}/_doc/${id}`,
@@ -393,7 +452,7 @@ async function loadInvitation(id: string) {
     undefined,
     true,
   );
-  if (!result)
+  if (!result || (result._source.eventId ?? DEFAULT_EVENT_ID) !== eventId)
     throw new ApiError(
       404,
       "This invitation could not be found. Check the link with the person who shared it.",
@@ -405,17 +464,19 @@ export async function getInvitation(
   request: Request,
   id: string,
 ): Promise<Invitation> {
+  const eventId = eventFromRequest(request);
   await ensureIndices();
   const [invitation, me] = await Promise.all([
-    loadInvitation(id),
-    currentPerson(request),
+    loadInvitation(id, eventId),
+    currentPerson(request, eventId),
   ]);
   return invitationView(id, invitation._source, me?._id ?? null);
 }
 
 export async function listInvitations(request: Request): Promise<Invitation[]> {
+  const eventId = eventFromRequest(request);
   await ensureIndices();
-  const me = await requirePerson(request);
+  const me = await requirePerson(request, eventId);
   const result = await elastic<SearchResult<InvitationDocument>>(
     `${INVITES_INDEX}/_search`,
     "POST",
@@ -425,6 +486,7 @@ export async function listInvitations(request: Request): Promise<Invitation[]> {
       query: {
         bool: {
           filter: [
+            eventFilter(eventId),
             { term: { memberIds: me._id } },
             { range: { expiresAt: { gt: "now" } } },
           ],
@@ -445,7 +507,7 @@ export async function listInvitations(request: Request): Promise<Invitation[]> {
   const memberIds = [
     ...new Set(active.flatMap((hit) => hit._source.memberIds)),
   ];
-  const members = await loadMembers(memberIds);
+  const members = await loadMembers(memberIds, eventId);
   const invitations = await Promise.all(
     active.map(async (hit) => {
       try {
@@ -465,10 +527,11 @@ export async function acceptInvitation(
   request: Request,
   id: string,
 ): Promise<Invitation> {
+  const eventId = eventFromRequest(request);
   await ensureIndices();
-  const me = await requirePerson(request);
+  const me = await requirePerson(request, eventId);
   for (let attempt = 0; attempt < 4; attempt++) {
-    const invitation = await loadInvitation(id);
+    const invitation = await loadInvitation(id, eventId);
     const document = invitation._source;
     assertOpen(document);
     if (!document.memberIds.includes(me._id))
